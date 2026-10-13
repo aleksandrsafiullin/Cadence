@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block main %}
+<div class="lab-data">
+  <div>
+    <h1 class="lab-title">{{ page_title }}</h1>
+    <p class="lab-lead">{{ lead }}</p>
+  </div>
+  {% if flash_error %}
+  <p class="lab-alert" role="alert">{{ flash_error }}</p>
+  {% endif %}
+  {% if flash_notice %}
+  <p class="lab-alert" role="status">{{ flash_notice }}</p>
+  {% endif %}
+  {% if list_error %}
+  <p class="lab-alert" role="alert">{{ list_error }}</p>
+  {% endif %}
+  {% if show_empty %}
+  <p class="lab-empty">{{ book.training_empty }}</p>
+  {% endif %}
+  {% if show_form %}
+  {% if not_ready %}
+  <p class="lab-alert" role="alert">{{ not_ready }}</p>
+  {% endif %}
+  <form class="lab-form" method="post" action="/training/start">
+    <label class="lab-label" for="train-dataset">{{ book.train_dataset }}</label>
+    <select class="lab-select" id="train-dataset" name="dataset_id"{% if not versions %} disabled{% endif %}>
+      {% if not versions %}
+      <option value="" disabled selected>{{ book.train_dataset_empty }}</option>
+      {% else %}
+      {% for item in versions %}
+      <option value="{{ item }}">{{ item }}</option>
+      {% endfor %}
+      {% endif %}
+    </select>
+    <label class="lab-label" for="train-variant">{{ book.train_variant }}</label>
+    <select class="lab-select" id="train-variant" name="variant">
+      <option value="nano"{% if variant == "nano" %} selected{% endif %}>Nano</option>
+      <option value="small"{% if variant == "small" %} selected{% endif %}>Small</option>
+    </select>
+    <label class="lab-label" for="train-profile">{{ book.train_profile }}</label>
+    <select class="lab-select" id="train-profile" name="profile">
+      {% for item in profile_options %}
+      <option value="{{ item.id }}"{% if item.id == profile %} selected{% endif %}>{{ item.label }}</option>
+      {% endfor %}
+    </select>
+    <p class="lab-caption" id="train-profile-help">{{ profile_help }}</p>
+    <label class="lab-label" for="train-device">{{ book.train_device }}</label>
+    <select class="lab-select" id="train-device" name="device">
+      {% for name in devices %}
+      <option value="{{ name }}"{% if name == "auto" %} selected{% endif %}>{{ name }}</option>
+      {% endfor %}
+    </select>
+    <p class="lab-caption">{{ book.device_help }}</p>
+    <details class="lab-details">
+      <summary>{{ book.advanced }}</summary>
+      <label class="lab-label" for="train-resolution">{{ book.train_resolution }}</label>
+      <input class="lab-input" id="train-resolution" name="resolution" type="number" min="1" step="1" value="{{ resolution_value }}">
+      <label class="lab-label" for="train-epochs">{{ book.train_epochs }}</label>
+      <input class="lab-input" id="train-epochs" name="epochs" type="number" min="1" step="1" value="{{ epochs_value }}">
+      <label class="lab-label" for="train-batch">{{ book.train_batch }}</label>
+      <input class="lab-input" id="train-batch" name="batch_size" type="number" min="1" step="1" value="{{ batch_value }}">
+      <label class="lab-label" for="train-accumulation">{{ book.train_accumulation }}</label>
+      <input class="lab-input" id="train-accumulation" name="gradient_accumulation" type="number" min="1" step="1" value="{{ accumulation_value }}">
+      <label class="lab-label" for="train-lr">{{ book.train_lr }}</label>
+      <input class="lab-input" id="train-lr" name="learning_rate" type="number" min="0" step="any" value="{{ lr_value }}">
+      <label class="lab-label" for="train-encoder-lr">{{ book.train_encoder_lr }}</label>
+      <input class="lab-input" id="train-encoder-lr" name="encoder_learning_rate" type="number" min="0" step="any" value="{{ encoder_lr_value }}">
+      <label class="lab-label" for="train-workers">{{ book.train_workers }}</label>
+      <input class="lab-input" id="train-workers" name="workers" type="number" min="0" step="1" value="{{ workers_value }}">
+      <label class="lab-label" for="train-seed">{{ book.train_seed }}</label>
+      <input class="lab-input" id="train-seed" name="seed" type="number" min="0" step="1" value="{{ seed_value }}">
+    </details>
+    <button type="submit" class="lab-button" id="train-start"{% if not start_enabled %} disabled{% endif %}>{{ book.train_start }}</button>
+    <p class="lab-caption">{{ book.train_start_help }}</p>
+  </form>
+  <form class="lab-form" method="post" action="/training/cancel">
+    {% if cancel_job_id %}
+    <input type="hidden" name="job_id" value="{{ cancel_job_id }}">
+    {% endif %}
+    <button type="submit" class="lab-button" id="train-cancel"{% if not cancel_job_id %} disabled{% endif %}>{{ book.train_cancel }}</button>
+    <p class="lab-caption">{{ book.train_cancel_help }}</p>
+  </form>
+  {% if blocked_message %}
+  <p class="lab-caption">{{ blocked_message }}</p>
+  {% endif %}
+  <div class="lab-alert" data-tone="{{ status_tone }}"{% if poll %} data-job-poll data-status="{{ status_value }}" data-progress-url="jobs/{{ status_job_id }}/progress"{% endif %}>
+    <span class="lab-status-mark"></span>
+    <span id="train-status" data-job-line>{{ status_line }}</span>
+  </div>
+  <div class="lab-indicators">
+    <div class="lab-metric"><span>{{ book.train_epoch }}</span><b id="train-epoch">{{ epoch_text }}</b></div>
+    <div class="lab-metric"><span>{{ book.train_checkpoint }}</span><b id="train-checkpoint">{{ checkpoint_text }}</b></div>
+    <div class="lab-metric"><span>{{ book.train_eta }}</span><b id="train-eta">{{ eta_text }}</b></div>
+  </div>
+  {% if log_broken %}
+  <p class="lab-caption">{{ log_broken }}</p>
+  {% endif %}
+  {% if log_empty %}
+  <p class="lab-empty">{{ log_empty }}</p>
+  {% endif %}
+  <section>
+    <h2 class="lab-section">{{ book.train_jobs }}</h2>
+    {% if job_rows %}
+    {% for row in job_rows %}
+    <div class="lab-alert" data-tone="{{ row.tone }}">
+      <span class="lab-status-mark"></span>
+      <span>{{ row.line }}</span>
+    </div>
+    {% endfor %}
+    {% else %}
+    <p class="lab-caption">{{ book.train_jobs_empty }}</p>
+    {% endif %}
+  </section>
+  <script type="application/json" id="train-profiles">{{ profiles | tojson }}</script>
+  <script src="/static/chart.js"></script>
+  <script src="/static/lab.js"></script>
+  {% endif %}
+</div>
+{% endblock %}

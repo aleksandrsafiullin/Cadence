@@ -1,0 +1,19 @@
+---
+description: Episodes, COCO/CVAT exchange, and split leakage rules
+globs: src/excavation_lab/datasets/**,src/excavation_lab/schemas.py,configs/**
+alwaysApply: false
+---
+
+# Data, splits, annotation
+
+Four detection classes, internal IDs 0–3. Map COCO `category_id` and model outputs **by name** via `class_mapping.json`. Class 0 is not background. Do not snap an unknown category to a nearby class. `iscrowd=1` is not occlusion or uncertainty.
+
+Boxes mark visible extent. `visibility = clear | partial | unlabelable`. A hidden bucket gets no invented box. Nested `truck_bed` inside `haul_truck` is valid. Reviewed-empty, unreviewed, and excluded are different: an unreviewed frame is not a negative.
+
+**Splits:** divide whole episodes / `split_group_id` first, then sample frames. Never shuffle frames of one video into train and test. One group has one split. Guard gap ≥ 10s; an operation that crosses a boundary moves entirely into one split. Freeze writes immutable `split_manifest.json`. Sampler and CVAT import must not reshuffle it. Active learning adds **train only**.
+
+Train may update weights. Validation picks checkpoints and thresholds. Test is a separate final command. Too few episodes → say so; a same-scene check is not a transfer result.
+
+**CVAT:** the app does not reimplement CVAT. Export `annotation_batch.zip` (`images/`, `frames_manifest.csv`, `labels.yaml`, instructions, optional `predictions.coco.json` marked as not ground truth). Import checks hash, size, `bbox` xywh inside the image, unique ids, class names, full review, and no split-group crossover. Round-trip: image → CVAT COCO → import → RF-DETR layout (`train/`, `valid/`, `test/`, `_annotations.coco.json`). Unsupported attributes go to a sidecar, not dropped silently. Training COCO contains only allowed frames.
+
+Block a training snapshot until the split is frozen. Tests live under `tests/unit` or `tests/integration` (spec §19 items 1–4).

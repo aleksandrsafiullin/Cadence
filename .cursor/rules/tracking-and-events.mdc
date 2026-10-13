@@ -1,0 +1,25 @@
+---
+description: ByteTrack, bucket and bed association, and v0.2 event rules
+globs: src/excavation_lab/tracking/**,src/excavation_lab/analytics/**
+alwaysApply: false
+---
+
+# Tracking and events
+
+New tracking code uses `ByteTrackTracker.update()`. Do not use deprecated `sv.ByteTrack`. `supervision` is for `Detections`, boxes, and labels.
+
+`haul_truck` and `excavator_body` get independent ByteTrack instances. Track ids are namespaced `(run_id, video_id, view_id, object_class, local_track_id)`. No class-agnostic tracker across nested parts of one machine. Cross-class suppression must not delete `truck_bed` or merge `bucket` into `excavator_body`.
+
+Do not drop low scores before the tracker. Starting floors: detection 0.10, display 0.35; ByteTrack high-confidence split 0.35 and activation 0.45 — confirm against the installed `trackers` version and tune on validation only. A low score may support an existing track and still stay off the reliable display and out of events.
+
+Lost-vehicle buffer starts at 2 seconds, new-track confirmation at 2 observations. In `trackers`, `lost_track_buffer` is in reference-30fps frames: 2s → 60, not 10 just because analysis is 5 Hz. Convert seconds in the adapter and test it. Pass source timestamps into `update()` when that API exists. Reset trackers on a new video, seek, analysis restart, or scene change. A UI threshold change does not mutate a saved run.
+
+**Bucket (`BucketAssociator`):** bind `bucket` observations to the working excavator using score, proximity, working area, and continuity. Thresholds scale with body/object size, not a fixed pixel radius. Comparable candidates return `ambiguous`, not "first wins". Keep an observed trail of the last 5s; do not draw a straight line across a long gap. Display extrapolation is dashed, `predicted`, default ≤ 0.4s, and never confirms a dump. A second live excavator warns and does not attach every bucket to the first.
+
+**Bed:** associate `truck_bed` to `haul_truck` by containment, center distance, temporal stability, and uniqueness. IoU alone is not enough. One bed cannot have two parents; on a tie store `parent_track_id=null` and `ambiguous=true`. A bed box is not 3D contact and not a dump.
+
+States: `observed | weak | predicted | missing | ambiguous`. `missing` is not physical absence. Reasons: `no_detection`, `low_confidence`, `occluded_if_known`, `out_of_frame_if_known`, `decode_gap`, `ambiguous_association`. Do not call a miss occlusion.
+
+Predicted boxes go to `track_states.parquet` with `is_observed=false`. `detections.parquet` is detector output for that frame only. `frame_status.parquet` exists so an empty frame is distinct from a frame never analyzed.
+
+**v0.2** (`analytics/`) stays off until a custom detector and checked time/association outputs exist. Unload output is an inferred candidate, not a fact. Rule scores are not probabilities. Confirmed and estimated counts stay separate. Do not invent tons, fill factor, or t/h. Geometry code must not hardcode "face on the left".

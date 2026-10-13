@@ -1,0 +1,12 @@
+# Template only. Not a measured camera. Zones stay empty until a real view is saved.
+schema_version: 1
+view_id: example
+site_id: null
+camera_id: null
+equipment_family: null
+measured: false
+working_area: []
+dig_zone: []
+loading_zone: []
+entry_zone: []
+exit_zone: []

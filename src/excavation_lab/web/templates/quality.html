@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block main %}
+<div class="lab-quality">
+  <div>
+    <h1 class="lab-title">{{ page_title }}</h1>
+    <p class="lab-lead">{{ lead }}</p>
+  </div>
+  {% if flash_error %}
+  <p class="lab-alert" role="alert">{{ flash_error }}</p>
+  {% endif %}
+  {% if flash_notice %}
+  <p class="lab-alert" role="status">{{ flash_notice }}</p>
+  {% endif %}
+  {% if list_error %}
+  <p class="lab-alert" role="alert">{{ list_error }}</p>
+  {% endif %}
+  {% if show_empty %}
+  <p class="lab-empty">{{ book.quality_empty }}</p>
+  {% endif %}
+  {% if runs %}
+  <form class="lab-form" method="get" action="/quality">
+    <label class="lab-label" for="quality-run">{{ book.quality_run }}</label>
+    <select class="lab-select" id="quality-run" name="quality_run">
+      {% for item in run_options %}
+      <option value="{{ item.id }}"{% if item.selected %} selected{% endif %}>{{ item.id }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="lab-button">{{ book.quality_run }}</button>
+  </form>
+  {% endif %}
+  <div class="lab-indicators">
+    {% for item in summary_metrics %}
+    <div class="lab-metric"><span>{{ item.label }}</span><b>{{ item.value }}</b></div>
+    {% endfor %}
+  </div>
+  <p class="lab-caption">{{ book.quality_visibility }}</p>
+  <div class="lab-indicators">
+    {% for item in visibility_metrics %}
+    <div class="lab-metric"><span>{{ item.label }}</span><b>{{ item.value }}</b></div>
+    {% endfor %}
+  </div>
+  <p class="lab-caption">{{ tracking_caption }}</p>
+  <div class="lab-indicators">
+    {% for item in tracking_metrics %}
+    <div class="lab-metric"><span>{{ item.label }}</span><b>{{ item.value }}</b></div>
+    {% endfor %}
+  </div>
+  <p class="lab-caption">{{ book.quality_classes }}</p>
+  <div class="lab-indicators">
+    {% for item in class_metrics %}
+    <div class="lab-metric"><span>{{ item.label }}</span><b>{{ item.value }}</b></div>
+    {% endfor %}
+  </div>
+  {% if ap50_spec %}
+  <script type="application/json" id="ap50-chart">{{ ap50_spec | tojson }}</script>
+  {% endif %}
+  <p class="lab-caption">{{ book.target_caption }}</p>
+  {% for line in target_lines %}
+  <p class="lab-caption">{{ line }}</p>
+  {% endfor %}
+  <details class="lab-details">
+    <summary>{{ book.advanced }}</summary>
+    <p class="lab-caption">{{ book.thresholds_differ }}</p>
+    {% for line in setting_lines %}
+    <p class="lab-caption">{{ line }}</p>
+    {% endfor %}
+  </details>
+  {% if show_compare %}
+  <p class="lab-caption">{{ book.quality_compare }}</p>
+  <form class="lab-form" method="post" action="/quality/compare">
+    {% if eval_id %}
+    <input type="hidden" name="quality_run" value="{{ eval_id }}">
+    {% endif %}
+    <label class="lab-label" for="quality-run-a">{{ book.quality_run_a }}</label>
+    <select class="lab-select" id="quality-run-a" name="quality_run_a">
+      {% for item in run_a_options %}
+      <option value="{{ item.id }}"{% if item.selected %} selected{% endif %}>{{ item.id }}</option>
+      {% endfor %}
+    </select>
+    <label class="lab-label" for="quality-run-b">{{ book.quality_run_b }}</label>
+    <select class="lab-select" id="quality-run-b" name="quality_run_b">
+      {% for item in run_b_options %}
+      <option value="{{ item.id }}"{% if item.selected %} selected{% endif %}>{{ item.id }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="lab-button">{{ book.quality_compare }}</button>
+  </form>
+  {% if compare_same %}
+  <p class="lab-caption">{{ book.quality_compare_same }}</p>
+  {% endif %}
+  {% if delta_metrics %}
+  <p class="lab-caption">{{ book.quality_delta }}</p>
+  <div class="lab-indicators">
+    {% for item in delta_metrics %}
+    <div class="lab-metric"><span>{{ item.label }}</span><b>{{ item.value }}</b></div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% endif %}
+  {% if show_errors %}
+  <p class="lab-caption">{{ book.quality_errors }}</p>
+  {% if errors_message %}
+  <p class="lab-caption">{{ errors_message }}</p>
+  {% endif %}
+  {% for row in error_rows %}
+  <p class="lab-caption">{{ row.line }}</p>
+  <form class="lab-form" method="post" action="/quality/label">
+    {% if eval_id %}
+    <input type="hidden" name="quality_run" value="{{ eval_id }}">
+    {% endif %}
+    <input type="hidden" name="frame_id" value="{{ row.frame_id }}">
+    <button type="submit" class="lab-button" name="{{ row.key }}" value="1" title="{{ book.send_train_only }}"{% if not row.enabled %} disabled{% endif %}>{{ book.send_to_labeling }}</button>
+  </form>
+  {% endfor %}
+  {% endif %}
+  <script src="/static/chart.js"></script>
+</div>
+{% endblock %}

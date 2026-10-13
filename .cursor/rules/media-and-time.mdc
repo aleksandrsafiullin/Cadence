@@ -1,0 +1,21 @@
+---
+description: Video import, PTS timebase, and preview export
+globs: src/excavation_lab/media/**,src/excavation_lab/visualization/**
+alwaysApply: false
+---
+
+# Media and time
+
+Local MP4/MOV/MKV when the installed backend can decode them. Pilot priority is MP4. A YouTube URL is provenance, not the file. Do not download a replacement clip or bypass access limits.
+
+Probe with ffprobe. Persist `video_id`, name, SHA-256, size, duration, width/height, rotation, SAR/DAR, codec, nominal/average FPS, time base, and optional source URL. A failed open returns a specific diagnostic error.
+
+**Clock:** seconds from the start of the source video, from decoded PTS plus time base, including the start offset. `frame_index / fps` is allowed only as a labeled fallback on a verified constant-frame-rate file. A fragment that starts at 300s must not restart at timestamp 0. Preview may start at 0 only with `preview_time_map.csv` linking preview time to source time.
+
+Each analyzed frame stores `video_id`, `source_frame_index`, `source_pts`, `time_base`, `source_time_s`, `analysis_index`, width, height. Intervals in SQLite are half-open `[start_s, end_s)`. Reject negative durations, decreasing timestamps, and a second pass over the same source frame. Mark corrupt spans; do not turn them into machine downtime.
+
+**Rate:** default detection grid is 5 Hz and configurable. Keep each chosen frame's real PTS. Pass that timestamp into the tracker. Source FPS, analysis FPS, and export FPS are different numbers.
+
+**Export:** dropping frames must not speed the video up. Five analyzed frames per second are written on that timeline, not as the source 30 fps. A CFR preview may repeat a picture across its display interval; the repeat is not a new observation. A large gap shows «нет наблюдения». Preview duration matches the chosen source interval within one output frame. v0.1 annotated export need not keep audio.
+
+Stream long files from disk inside allowed directories. Do not load the whole clip into RAM. Browser upload is only for a small file; the documented upload cap is 8192 MiB and is not raised without a bound.

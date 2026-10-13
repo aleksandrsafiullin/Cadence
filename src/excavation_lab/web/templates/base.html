@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="{{ lang | default('ru') }}" data-theme="{{ theme | default('dark') }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ product_title }}</title>
+  <link rel="stylesheet" href="/static/lab_theme.css">
+  <link rel="stylesheet" href="/static/lab.css">
+</head>
+<body>
+  <a class="lab-skip" href="#content">{{ skip_label | default('К содержанию') }}</a>
+  <div class="lab-app">
+    <aside class="lab-sidebar">
+      {% block sidebar %}
+      <p class="lab-section">{{ product_title }}</p>
+      <p class="lab-kicker">{{ kicker_project }}</p>
+      <form method="post" action="/project">
+        <input type="hidden" name="next" value="{{ current_path | default('/') }}">
+        <label class="lab-label" for="lab-project">{{ project_label }}</label>
+        <select class="lab-select" id="lab-project" name="project"{% if not projects %} disabled{% endif %}>
+          {% if not projects %}
+          <option disabled selected>{{ no_project }}</option>
+          {% else %}
+          {% for item in projects %}
+          <option value="{{ item.project_id }}"{% if item.project_id == project_id %} selected{% endif %}>{{ item.name }}</option>
+          {% endfor %}
+          {% endif %}
+        </select>
+        {% if projects %}
+        <button type="submit" class="lab-btn">{{ project_label }}</button>
+        {% endif %}
+        {% if project_help %}
+        <p class="lab-caption">{{ project_help }}</p>
+        {% endif %}
+        {% if project_error %}
+        <p class="lab-alert" role="alert">{{ project_error }}</p>
+        {% endif %}
+      </form>
+      <p class="lab-kicker">{{ kicker_workflow }}</p>
+      <nav class="lab-nav" aria-label="{{ kicker_workflow }}">
+        {% for link in nav_links | default([]) %}
+        <a class="lab-nav-btn" href="{{ link.path }}"{% if link.current %} aria-current="page"{% endif %}>{{ link.title }}</a>
+        {% endfor %}
+      </nav>
+      <p class="lab-kicker">{{ kicker_appearance }}</p>
+      <form method="post" action="/theme">
+        <input type="hidden" name="next" value="{{ current_path | default('/') }}">
+        <div class="lab-segmented" role="group" aria-label="{{ theme_label }}">
+          <button type="submit" class="lab-btn" name="theme" value="light" aria-pressed="{{ 'true' if theme == 'light' else 'false' }}">{{ theme_light }}</button>
+          <button type="submit" class="lab-btn" name="theme" value="dark" aria-pressed="{{ 'true' if theme == 'dark' else 'false' }}">{{ theme_dark }}</button>
+        </div>
+        {% if theme_display_only %}
+        <p class="lab-caption">{{ theme_display_only }}</p>
+        {% endif %}
+      </form>
+      <form method="post" action="/locale">
+        <input type="hidden" name="next" value="{{ current_path | default('/') }}">
+        <div class="lab-segmented" role="group" aria-label="{{ locale_label }}">
+          <button type="submit" class="lab-btn" name="locale" value="ru" aria-pressed="{{ 'true' if lang == 'ru' else 'false' }}">{{ language_russian }}</button>
+          <button type="submit" class="lab-btn" name="locale" value="en" aria-pressed="{{ 'true' if lang == 'en' else 'false' }}">{{ language_english }}</button>
+        </div>
+        {% if locale_caption %}
+        <p class="lab-caption">{{ locale_caption }}</p>
+        {% endif %}
+      </form>
+      {% if notice %}
+      <p class="lab-alert" role="alert">{{ notice }}</p>
+      {% endif %}
+      {% endblock %}
+    </aside>
+    <main class="lab-main" id="content">
+      {% block main %}{% endblock %}
+    </main>
+  </div>
+</body>
+</html>

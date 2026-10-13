@@ -1,0 +1,28 @@
+schema_version: 1
+classes:
+  - id: 0
+    name: excavator_body
+    title: "Экскаватор: корпус"
+  - id: 1
+    name: bucket
+    title: "Ковш"
+  - id: 2
+    name: haul_truck
+    title: "Самосвал"
+  - id: 3
+    name: truck_bed
+    title: "Кузов самосвала"
+visibility:
+  - clear
+  - partial
+  - unlabelable
+review_status:
+  - unreviewed
+  - reviewed
+  - excluded
+attributes:
+  - truncated
+  - instance_local_id
+  - annotator
+  - reviewed_at
+  - note

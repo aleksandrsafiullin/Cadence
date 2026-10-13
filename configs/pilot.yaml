@@ -1,0 +1,104 @@
+# Starting experiment values. Not claimed optima.
+schema_version: 1
+analysis_fps: 5.0
+guard_gap_s: 10
+split_fractions:
+  train: 0.60
+  validation: 0.20
+  test: 0.20
+  # Duration of whole episodes, not an exact frame count.
+  unit: episode_duration
+sample_plans:
+  diagnostic:
+    train: 60
+    validation: 20
+    test: 0
+  content:
+    train: 200
+    validation: 60
+    test: 60
+  expanded:
+    train: 360
+    validation: 120
+    test: 120
+sample_spacing_s: 2.0
+detection_floor: 0.10
+display_threshold: 0.35
+# Same-class duplicate NMS. null is off. v0.1 does not guess an IoU.
+# A bed inside a truck is a different class and is never removed by this.
+same_class_nms_iou: null
+bytetrack:
+  high_confidence: 0.35
+  activation: 0.45
+  lost_buffer_s: 2.0
+  reference_fps: 30
+  min_observations: 2
+bucket:
+  trail_s: 5.0
+  trail_gap_s: 0.5
+  extrapolation_s: 0.4
+  ambiguity_margin: 0.1
+bed:
+  min_containment: 0.5
+  ambiguity_margin: 0.1
+jump_norm: 0.5
+eval:
+  score_floor: 0.001
+  iou: 0.5
+  # Fixed cap so the 0.10 operating floor does not clip the PR curve.
+  max_detections: 100
+profiles:
+  smoke:
+    # RF-DETR Nano.
+    variant: nano
+    resolution: 384
+    epochs: 2
+    batch_size: 1
+    gradient_accumulation: 1
+    learning_rate: 1.0e-4
+    encoder_learning_rate: 1.0e-5
+    early_stopping: false
+    patience: null
+    min_delta: null
+    best_skip: 0
+    workers: 0
+    # null is FP32 (amp_dtype=None at the train boundary). Not FP16.
+    amp_dtype: null
+    seed: 42
+    run_test: false
+  pilot-small:
+    # RF-DETR Small.
+    variant: small
+    resolution: 512
+    epochs: 50
+    batch_size: 1
+    gradient_accumulation: 4
+    learning_rate: 1.0e-4
+    encoder_learning_rate: 1.0e-5
+    early_stopping: true
+    patience: 12
+    min_delta: 0.001
+    best_skip: 3
+    workers: 0
+    amp_dtype: null
+    seed: 42
+    run_test: false
+  # Diagnostic wiring check. Not a quality profile. Do not quote its mAP.
+  overfit:
+    diagnostic: true
+    variant: nano
+    resolution: 384
+    # Small epoch count, recorded in the resolved config. Not the pilot budget.
+    epochs: 8
+    batch_size: 1
+    gradient_accumulation: 1
+    learning_rate: 1.0e-4
+    encoder_learning_rate: 1.0e-5
+    early_stopping: false
+    patience: null
+    min_delta: null
+    best_skip: 0
+    workers: 0
+    amp_dtype: null
+    seed: 42
+    run_test: false

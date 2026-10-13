@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block main %}
+<h1 class="lab-title">{{ page_title }}</h1>
+<p class="lab-lead">{{ lead }}</p>
+<p class="lab-alert">{{ events_unavailable }}</p>
+<p class="lab-caption">{{ events_unavailable_caption }}</p>
+<div class="lab-indicators">
+{% for label in event_indicator_labels %}
+<div class="lab-metric"><span>{{ label }}</span><b>{{ not_calculated }}</b></div>
+{% endfor %}
+</div>
+<p class="lab-caption">{{ events_v02_caption }}</p>
+{% endblock %}

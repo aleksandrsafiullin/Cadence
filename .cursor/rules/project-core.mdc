@@ -1,0 +1,30 @@
+---
+description: Excavation Video Lab stack, layout, and verification
+alwaysApply: true
+---
+
+# Excavation Video Lab — Core
+
+Local excavation video chronometry prototype. Spec: `EXCAVATION_VIDEO_LAB_SPEC.md`. Package: `src/excavation_lab/`. UI Russian; code and entity names English. Do not reuse Predictive Maintenance / `src/pdm` conventions.
+
+**Stack:** Python 3.11 · `uv` (`pyproject.toml`, `uv.lock`) · `rfdetr[train,augment]==1.11.2` · PyTorch · `from trackers import ByteTrackTracker` · `supervision` drawings only · PyAV · `opencv-python-headless` · FFmpeg/ffprobe · Starlette · Jinja2 · vanilla JS · Pydantic 2 · Typer · PyYAML · SQLite · pandas/pyarrow · pytest · Ruff · COCO evaluator (`pycocotools`)
+
+**Not in this project:** training from scratch, Ultralytics, SAM, Grounding DINO, VLM/LLM, Roboflow `inference` or hosted endpoints, RF-DETR XL/2XL, `sv.ByteTrack`, MLflow, Redis, Celery, FastAPI, React, Docker for the app, FP8, `torch.compile`, CUDA graphs, ONNX/CoreML in v0.1.
+
+**Layout:** `src/excavation_lab/web/` · `src/excavation_lab/{cli,schemas,hardware,storage,jobs,media,datasets,models,tracking,analytics,visualization,ui}` · `configs/{pilot,labels}.yaml` · `configs/views/` · `tests/{unit,integration,fixtures}` · `docs/` · `workspace/` (never commit).
+
+**Principles:**
+- Commands go through `uv run` (`excavation …`, `pytest`, `ruff`). Do not invent `uv.lock` before a real resolve. If 1.11.2 cannot install, record the error and the replacement in `docs/DECISIONS.md`.
+- Fine-tune official weights on four classes (`excavator_body`, `bucket`, `haul_truck`, `truck_bed`). A COCO checkpoint is not a custom detector. `baseline_coco` keeps source class names.
+- Ship v0.1 first. v0.2 events/KPI stay hidden or explicitly unavailable. Missing measurements render «не рассчитано», never 0 or demo numbers.
+- Compute core does not import Starlette, Jinja2, or Streamlit. UI and CLI call the same services. Observation, inference, and review are separate layers; never overwrite detections with smoothed or predicted boxes.
+- One GPU/MPS job at a time. App listens on localhost only. Telemetry off. Subprocesses use argument arrays, never `shell=True`.
+- No substitute download if the pilot MP4 is absent. Synthetic fixtures are labeled and are not accuracy evidence.
+- Device is diagnosed (`CUDA → MPS → CPU`). Do not assume NVIDIA, a specific Apple chip, or a RAM size.
+
+**Verify before claiming done:**
+```bash
+uv run pytest tests -q
+uv run ruff check src tests
+```
+UI changes: run `uv run excavation ui` and exercise the changed screen. `train --profile smoke` is not a quality claim. A working app and an accurate model are separate acceptance items (spec §19, §25).

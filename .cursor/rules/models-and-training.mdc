@@ -1,0 +1,32 @@
+---
+description: RF-DETR adapter, fine-tune profiles, bundles, and evaluation
+globs: src/excavation_lab/models/**,src/excavation_lab/hardware.py
+alwaysApply: false
+---
+
+# Models and training
+
+Call RF-DETR directly. `DetectorAdapter` returns boxes in original-image coordinates, internal class ids, score, and checkpoint origin. If preprocessing resizes or pads, test the inverse. Do not rescale a box the library already mapped. Cover RGB vs BGR with an integration test.
+
+Fine-tune with the installed RF-DETR train API. Do not rewrite the training loop, freeze the whole backbone, or train only the last layer unless an experiment says so. Translate project YAML through the adapter; do not pass arbitrary YAML into `model.train(**config)`. `gradient_checkpointing` is constructor-only. FP32 is `amp_dtype=None`. No CUDA-only tricks on MPS.
+
+| | Smoke | Pilot Small |
+|---|---|---|
+| Variant | Nano | Small |
+| Resolution | 384 | 512 |
+| Epochs | 2 | ≤ 50 |
+| Batch / accum | 1 / 1 | 1 / 4 until measured |
+| LR / encoder LR | 1e-4 / 1e-5 | 1e-4 / 1e-5 |
+| Early stop | off | patience 12, min delta 0.001, skip first 3 |
+| Mac workers / precision | 0 / FP32 | 0 / FP32 |
+| Seed / `run_test` | 42 / False | 42 / False |
+
+These are starting profiles, not optima. Best checkpoint by validation box mAP50:95, plus a separate bucket metric. Training must not read test (`run_test=False`); confirm test paths are absent. Final test is `evaluate --split test --final` and must not train or retune thresholds.
+
+Train augmentations only: mild brightness/contrast, small scale/crop with valid boxes, horizontal flip with updated geometry. No vertical flip. Validation and test get deterministic preprocessing only.
+
+A real smoke run changes weights and writes a loadable checkpoint. An empty folder or drawings of fake boxes is not training. Overfit on 20–40 train frames is a data/class diagnostic, not a quality number.
+
+Bundle: `weights.pth`, configs, `class_mapping.json`, dataset hash, environment, metrics, `model_card.md`, `checksums.json`. Reload in a fresh process; variant, resolution, and class order must match. Do not confuse inference weights with a resume checkpoint. `custom` mode requires that bundle; missing weights are an error, not a fallback to baseline or a mock.
+
+AP is computed on raw detections before tracking, with a low eval score floor (start at 0.001). The operational floor 0.10 must not clip the PR curve. Compare runs only on the same dataset hash.

@@ -1,0 +1,216 @@
+{% extends "base.html" %}
+{% block main %}
+<div class="lab-data">
+  <div>
+    <h1 class="lab-title">{{ page_title }}</h1>
+    <p class="lab-lead">{{ lead }}</p>
+  </div>
+  {% if flash_error %}
+  <p class="lab-alert" role="alert">{{ flash_error }}</p>
+  {% endif %}
+  {% if flash_notice %}
+  <p class="lab-alert" role="status">{{ flash_notice }}</p>
+  {% endif %}
+  {% if list_error %}
+  <p class="lab-alert" role="alert">{{ list_error }}</p>
+  {% endif %}
+  {% if show_empty %}
+  <p class="lab-empty">{{ book.data_empty }}</p>
+  {% endif %}
+  {% if show_editor %}
+  {% if video_options %}
+  <form class="lab-form" method="get" action="/data">
+    <label class="lab-label" for="data-video">{{ book.video_choice }}</label>
+    <select class="lab-select" id="data-video" name="video">
+      {% for item in video_options %}
+      <option value="{{ item.id }}"{% if item.selected %} selected{% endif %}>{{ item.label }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="lab-button">{{ book.video_choice }}</button>
+  </form>
+  {% endif %}
+  <section>
+    <h2 class="lab-section">{{ book.episodes_heading }}</h2>
+    <form class="lab-form" method="post" action="/data/episode">
+      <input type="hidden" name="video_id" value="{{ selected_video_id }}">
+      <label class="lab-label" for="episode-id">{{ book.episode_id }}</label>
+      <input class="lab-input" id="episode-id" name="episode_id" type="text">
+      <label class="lab-label" for="episode-group">{{ book.episode_group }}</label>
+      <input class="lab-input" id="episode-group" name="split_group_id" type="text">
+      <label class="lab-label" for="episode-start">{{ book.interval_start }}</label>
+      <input class="lab-input" id="episode-start" name="start_s" type="number" min="0" step="any" value="0">
+      <label class="lab-label" for="episode-end">{{ book.interval_end }}</label>
+      <input class="lab-input" id="episode-end" name="end_s" type="number" min="0" step="any" value="1">
+      <p class="lab-caption">{{ book.interval_help }}</p>
+      <label class="lab-label" for="episode-label">{{ book.episode_label }}</label>
+      <input class="lab-input" id="episode-label" name="label" type="text">
+      <label class="lab-label" for="episode-concurrent">{{ book.episode_concurrent }}</label>
+      <input id="episode-concurrent" name="concurrent" type="checkbox" value="1">
+      <button type="submit" class="lab-button">{{ book.add_episode }}</button>
+    </form>
+    {% if episode_error %}
+    <p class="lab-alert" role="alert">{{ episode_error }}</p>
+    {% endif %}
+    {% if episode_rows %}
+    <div class="lab-table-wrap">
+      <table class="lab-table">
+        <thead>
+          <tr>
+            <th>{{ book.column_episode }}</th>
+            <th>{{ book.column_start_s }}</th>
+            <th>{{ book.column_end_s }}</th>
+            <th>{{ book.column_split_group }}</th>
+            <th>{{ book.column_label }}</th>
+            <th>{{ book.column_split }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in episode_rows %}
+          <tr>
+            <td>{{ row.episode_id }}</td>
+            <td>{{ row.start_s }}</td>
+            <td>{{ row.end_s }}</td>
+            <td>{{ row.split_group_id }}</td>
+            <td>{{ row.label }}</td>
+            <td>{{ row.split }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% for line in episode_lines %}
+    <p class="lab-caption">{{ line }}</p>
+    {% endfor %}
+    {% else %}
+    <p class="lab-caption">{{ book.episodes_empty }}</p>
+    {% endif %}
+  </section>
+  <section>
+    <h2 class="lab-section">{{ book.split_heading }}</h2>
+    <form class="lab-form" method="post" action="/data/propose">
+      <input type="hidden" name="video_id" value="{{ selected_video_id }}">
+      <button type="submit" class="lab-button">{{ book.propose_split }}</button>
+    </form>
+    <form class="lab-form" method="post" action="/data/freeze">
+      <input type="hidden" name="video_id" value="{{ selected_video_id }}">
+      <button type="submit" class="lab-button">{{ book.freeze_split }}</button>
+      <p class="lab-caption">{{ book.freeze_note }}</p>
+    </form>
+    {% if split_load_error %}
+    <p class="lab-alert" role="alert">{{ split_load_error }}</p>
+    {% endif %}
+    {% if split_state == "missing" %}
+    <p class="lab-caption">{{ book.proposal_missing }}</p>
+    {% else %}
+    <p class="lab-caption">{{ split_state_heading }}</p>
+    {% if split_hash_line %}
+    <p class="lab-caption">{{ split_hash_line }}</p>
+    {% endif %}
+    {% if independence_line %}
+    <p class="lab-caption">{{ independence_line }}</p>
+    {% endif %}
+    {% if limitation %}
+    <p class="lab-caption">{{ limitation }}</p>
+    {% endif %}
+    <h2 class="lab-section">{{ book.guards_heading }}</h2>
+    {% for line in guard_lines %}
+    <p class="lab-caption">{{ line }}</p>
+    {% endfor %}
+    {% for line in block_lines %}
+    <p class="lab-caption">{{ line }}</p>
+    {% endfor %}
+    {% endif %}
+  </section>
+  <section>
+    <h2 class="lab-section">{{ book.sample_heading }}</h2>
+    <p class="lab-caption">{{ book.sample_rule }}</p>
+    <form class="lab-form" method="post" action="/data/sample">
+      <input type="hidden" name="video_id" value="{{ selected_video_id }}">
+      <label class="lab-label" for="sample-plan">{{ book.sample_plan }}</label>
+      <select class="lab-select" id="sample-plan" name="plan">
+        {% for item in plan_options %}
+        <option value="{{ item.id }}">{{ item.label }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="lab-button" name="sample_mode" value="plan">{{ book.sample_plan_button }}</button>
+      <label class="lab-label" for="sample-split">{{ book.sample_split }}</label>
+      <select class="lab-select" id="sample-split" name="split">
+        {% for name in splits %}
+        <option value="{{ name }}">{{ name }}</option>
+        {% endfor %}
+      </select>
+      <label class="lab-label" for="sample-count">{{ book.sample_count }}</label>
+      <input class="lab-input" id="sample-count" name="count" type="number" min="1" step="1" value="4">
+      <button type="submit" class="lab-button" name="sample_mode" value="count">{{ book.sample_count_button }}</button>
+      <details class="lab-details">
+        <summary>{{ book.advanced }}</summary>
+        <label class="lab-label" for="sample-spacing">{{ book.sample_spacing }}</label>
+        <input class="lab-input" id="sample-spacing" name="spacing_s" type="number" min="0.1" step="0.1" value="{{ spacing_value }}">
+        <p class="lab-caption">{{ book.plan_counts_caption }}</p>
+        <p class="lab-caption">{{ plan_count_text }}</p>
+      </details>
+    </form>
+    <h2 class="lab-section">{{ book.contact_heading }}</h2>
+    {% if contact_error %}
+    <p class="lab-alert" role="alert">{{ contact_error }}</p>
+    {% endif %}
+    {% if contact_names %}
+    <ul class="lab-meta" id="contact-sheet">
+      {% for name in contact_names %}
+      <li>{{ name }}</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="lab-caption">{{ book.contact_empty }}</p>
+    {% endif %}
+  </section>
+  <section>
+    <h2 class="lab-section">{{ book.cvat_heading }}</h2>
+    <form class="lab-form" method="post" action="/data/export">
+      <input type="hidden" name="video_id" value="{{ selected_video_id }}">
+      <label class="lab-label" for="export-split">{{ book.batch_split }}</label>
+      <select class="lab-select" id="export-split" name="split">
+        {% for name in splits %}
+        <option value="{{ name }}">{{ name }}</option>
+        {% endfor %}
+      </select>
+      <label class="lab-label" for="include-predictions">{{ book.include_predictions }}</label>
+      <input id="include-predictions" name="include_predictions" type="checkbox" value="1">
+      <p class="lab-caption">{{ book.predictions_help }}</p>
+      <button type="submit" class="lab-button">{{ book.export_cvat }}</button>
+    </form>
+    <form class="lab-form" method="post" action="/data/import" enctype="multipart/form-data">
+      <input type="hidden" name="video_id" value="{{ selected_video_id }}">
+      <label class="lab-label" for="import-split">{{ book.batch_split }}</label>
+      <select class="lab-select" id="import-split" name="split">
+        {% for name in splits %}
+        <option value="{{ name }}">{{ name }}</option>
+        {% endfor %}
+      </select>
+      <label class="lab-label" for="import-file">{{ book.import_file }}</label>
+      <input class="lab-input" id="import-file" name="file" type="file" accept=".zip,application/zip">
+      <button type="submit" class="lab-button">{{ book.import_coco }}</button>
+    </form>
+  </section>
+  {% endif %}
+  <section>
+    <p class="lab-caption">{{ snapshot_reason }}</p>
+    <form class="lab-form" method="post" action="/data/snapshot">
+      <button type="submit" class="lab-button" title="{{ snapshot_reason }}"{% if not snapshot_enabled %} disabled{% endif %}>{{ book.snapshot_dataset }}</button>
+    </form>
+  </section>
+  <section>
+    <h2 class="lab-section">{{ book.review_heading }}</h2>
+    <p class="lab-caption">{{ review_text }}</p>
+    {% if review_error %}
+    <p class="lab-caption">{{ review_error }}</p>
+    {% endif %}
+    {% for line in review_warnings %}
+    <p class="lab-caption">{{ line }}</p>
+    {% endfor %}
+    {% for line in review_errors %}
+    <p class="lab-alert" role="alert">{{ line }}</p>
+    {% endfor %}
+  </section>
+</div>
+{% endblock %}

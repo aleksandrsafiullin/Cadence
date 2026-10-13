@@ -1,0 +1,294 @@
+{% extends "base.html" %}
+{% block main %}
+<div class="lab-analysis">
+  <div>
+    <h1 class="lab-title">{{ page_title }}</h1>
+    <p class="lab-lead">{{ lead }}</p>
+  </div>
+  {% if flash_error %}
+  <p class="lab-alert" role="alert">{{ flash_error }}</p>
+  {% endif %}
+  {% if flash_notice %}
+  <p class="lab-alert" role="status">{{ flash_notice }}</p>
+  {% endif %}
+  {% if list_error %}
+  <p class="lab-alert" role="alert">{{ list_error }}</p>
+  {% endif %}
+  <ul class="lab-meta" id="analysis-header">
+    {% for line in header_lines %}
+    <li>{{ line }}</li>
+    {% endfor %}
+  </ul>
+  {% if show_empty %}
+  {% if no_video %}
+  <p class="lab-empty">{{ book.analysis_no_video }}</p>
+  {% endif %}
+  <p class="lab-empty">{{ book.analysis_empty }}</p>
+  {% endif %}
+  {% if show_form %}
+  {% if video_options %}
+  <form class="lab-form" method="get" action="/analysis">
+    <label class="lab-label" for="analysis-video">{{ book.video_choice }}</label>
+    <select class="lab-select" id="analysis-video" name="video">
+      {% for item in video_options %}
+      <option value="{{ item.id }}"{% if item.selected %} selected{% endif %}>{{ item.label }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="lab-button">{{ book.video_choice }}</button>
+  </form>
+  {% endif %}
+  <form class="lab-form" id="analysis-start-form" method="post" action="/analysis/start">
+    <input type="hidden" name="video_id" value="{{ selected_video_id }}">
+    {% if run_id %}
+    <input type="hidden" name="run_id" value="{{ run_id }}">
+    {% endif %}
+    <label class="lab-label" for="analysis-mode">{{ book.model_mode }}</label>
+    <select class="lab-select" id="analysis-mode" name="mode">
+      <option value="baseline"{% if mode == "baseline" %} selected{% endif %}>{{ book.mode_baseline }}</option>
+      <option value="custom"{% if mode == "custom" %} selected{% endif %}>{{ book.mode_custom }}</option>
+    </select>
+    {% if mode == "custom" %}
+    {% if bundles %}
+    <label class="lab-label" for="analysis-bundle">{{ book.bundle_label }}</label>
+    <select class="lab-select" id="analysis-bundle" name="bundle">
+      {% for item in bundles %}
+      <option value="{{ item }}"{% if item == bundle %} selected{% endif %}>{{ item }}</option>
+      {% endfor %}
+    </select>
+    {% else %}
+    <p class="lab-caption">{{ book.custom_needs_bundle }}</p>
+    {% endif %}
+    {% else %}
+    <p class="lab-caption">{{ book.baseline_caption }}</p>
+    {% if weights_warning %}
+    <p class="lab-alert" role="alert">{{ weights_warning }}</p>
+    {% endif %}
+    {% endif %}
+    {% if interval_known %}
+    <label class="lab-label" for="analysis-start">{{ book.interval_start }}</label>
+    <input class="lab-input" id="analysis-start" name="start_s" type="number" min="0" step="any" value="{{ start_value }}">
+    <label class="lab-label" for="analysis-end">{{ book.interval_end }}</label>
+    <input class="lab-input" id="analysis-end" name="end_s" type="number" min="0" step="any" value="{{ end_value }}">
+    <p class="lab-caption">{{ book.interval_help }}</p>
+    {% else %}
+    <p class="lab-caption">{{ book.analysis_interval_unknown }}</p>
+    {% endif %}
+    <label class="lab-label" for="analysis-fps">{{ book.analysis_fps_label }}</label>
+    <input class="lab-input" id="analysis-fps" name="analysis_fps" type="number" min="0.1" step="any" value="{{ fps_value }}">
+    <p class="lab-caption">{{ book.analysis_fps_help }}</p>
+    <p class="lab-caption">{{ book.analysis_player_help }}</p>
+    <label class="lab-label" for="analysis-view-start">{{ book.zone_view }}</label>
+    <input class="lab-input" id="analysis-view-start" name="view_id" type="text" value="{{ view_id }}">
+    <button type="submit" class="lab-button" id="analysis-start-button"{% if not start_enabled %} disabled{% endif %}>{{ book.analysis_start }}</button>
+    <p class="lab-caption">{{ book.analysis_start_help }}</p>
+    <details class="lab-details">
+      <summary>{{ book.advanced }}</summary>
+      <p class="lab-caption">{{ book.threshold_new_run }}</p>
+      <label class="lab-label" for="analysis-high">{{ book.bt_high }}</label>
+      <input class="lab-input" id="analysis-high" name="high_confidence" type="number" min="0" max="1" step="any" value="{{ high_value }}">
+      <label class="lab-label" for="analysis-activation">{{ book.bt_activation }}</label>
+      <input class="lab-input" id="analysis-activation" name="activation" type="number" min="0" max="1" step="any" value="{{ activation_value }}">
+      <label class="lab-label" for="analysis-lost">{{ book.bt_lost }}</label>
+      <input class="lab-input" id="analysis-lost" name="lost_buffer_s" type="number" min="0.1" step="any" value="{{ lost_value }}">
+      <label class="lab-label" for="analysis-min">{{ book.bt_min }}</label>
+      <input class="lab-input" id="analysis-min" name="min_observations" type="number" min="1" step="1" value="{{ min_value }}">
+      <label class="lab-label" for="analysis-display">{{ book.display_threshold }}</label>
+      <input class="lab-input" id="analysis-display" name="display_threshold" type="number" min="{{ display_floor }}" max="1" step="any" value="{{ display_value }}">
+      <button type="submit" class="lab-button" id="analysis-threshold" formaction="/analysis/threshold">{{ book.display_threshold }}</button>
+    </details>
+  </form>
+  {% if blocked_message %}
+  <p class="lab-caption">{{ blocked_message }}</p>
+  {% endif %}
+  {% if poll %}
+  <div class="lab-alert" data-tone="{{ status_tone }}" data-job-poll data-status="{{ status_value }}" data-progress-url="jobs/{{ status_job_id }}/progress">
+    <span class="lab-status-mark"></span>
+    <span id="analysis-status" data-job-line>{{ status_line }}</span>
+  </div>
+  {% endif %}
+  {% if job_rows %}
+  {% for row in job_rows %}
+  <div class="lab-alert" data-tone="{{ row.tone }}">
+    <span class="lab-status-mark"></span>
+    <span>{{ row.line }}</span>
+  </div>
+  {% endfor %}
+  {% endif %}
+  {% if run_options %}
+  <form class="lab-form" method="get" action="/analysis">
+    <input type="hidden" name="mode" value="{{ mode }}">
+    <label class="lab-label" for="analysis-run">{{ book.run_choice }}</label>
+    <select class="lab-select" id="analysis-run" name="run">
+      {% for item in run_options %}
+      <option value="{{ item.id }}"{% if item.selected %} selected{% endif %}>{{ item.id }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="lab-button">{{ book.run_choice }}</button>
+  </form>
+  {% endif %}
+  {% if time_options %}
+  <form class="lab-form" method="get" action="/analysis">
+    <input type="hidden" name="mode" value="{{ mode }}">
+    {% if run_id %}
+    <input type="hidden" name="run" value="{{ run_id }}">
+    {% endif %}
+    <label class="lab-label" for="analysis-time">{{ book.diagnostic_time }}</label>
+    <select class="lab-select" id="analysis-time" name="source_time_s">
+      {% for item in time_options %}
+      <option value="{{ item.value }}"{% if item.selected %} selected{% endif %}>{{ item.label }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="lab-button">{{ book.diagnostic_time }}</button>
+  </form>
+  {% elif frame_list_missing %}
+  <p class="lab-caption">{{ book.frame_list_not_built }}</p>
+  {% endif %}
+  {% if baseline_run %}
+  <p class="lab-caption">{{ book.baseline_caption }}</p>
+  {% endif %}
+  {% if play_url %}
+  <video controls preload="metadata" src="{{ play_url }}"></video>
+  <p class="lab-caption">{{ book.analysis_player_help }}</p>
+  {% elif player_waiting %}
+  <p class="lab-caption">{{ player_waiting }}</p>
+  {% endif %}
+  {% if review_ready %}
+  <section class="lab-split">
+    <div class="lab-frame">
+      {% if frame_url %}
+      <img id="analysis-frame" alt="" src="{{ frame_url }}">
+      {% else %}
+      <p class="lab-caption">{{ book.frame_unread }}</p>
+      {% endif %}
+    </div>
+    <div>
+      <h2 class="lab-section">{{ book.detections_heading }}</h2>
+      {% if detection_rows %}
+      <div class="lab-table-wrap">
+        <table class="lab-table" id="analysis-detections">
+          <thead>
+            <tr>
+              <th>{{ book.zone_name }}</th>
+              <th>score</th>
+              <th>x1</th>
+              <th>y1</th>
+              <th>x2</th>
+              <th>y2</th>
+              <th>track</th>
+              <th>state</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in detection_rows %}
+            <tr>
+              <td>{{ row.class_name }}</td>
+              <td>{{ row.score }}</td>
+              <td>{{ row.x1 }}</td>
+              <td>{{ row.y1 }}</td>
+              <td>{{ row.x2 }}</td>
+              <td>{{ row.y2 }}</td>
+              <td>{{ row.track_id_nullable }}</td>
+              <td>{{ row.observation_state }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="lab-caption">{{ book.detections_none }}</p>
+      {% endif %}
+      {% if predicted_rows %}
+      <h2 class="lab-section">{{ book.predicted_heading }}</h2>
+      <div class="lab-table-wrap">
+        <table class="lab-table" id="analysis-predicted">
+          <thead>
+            <tr>
+              <th>{{ book.zone_name }}</th>
+              <th>state</th>
+              <th>x1</th>
+              <th>y1</th>
+              <th>x2</th>
+              <th>y2</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in predicted_rows %}
+            <tr>
+              <td>{{ row.class_name }}</td>
+              <td>{{ row.state }}</td>
+              <td>{{ row.x1_nullable }}</td>
+              <td>{{ row.y1_nullable }}</td>
+              <td>{{ row.x2_nullable }}</td>
+              <td>{{ row.y2_nullable }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+  {% endif %}
+  <section>
+    <h2 class="lab-section">{{ book.zone_heading }}</h2>
+    <p class="lab-caption">{{ book.zone_help }}</p>
+    <form class="lab-form" id="analysis-review-form" method="post" action="/analysis/export">
+      <input type="hidden" name="video_id" value="{{ selected_video_id }}">
+      <input type="hidden" name="mode" value="{{ mode }}">
+      {% if run_id %}
+      <input type="hidden" name="run_id" value="{{ run_id }}">
+      {% endif %}
+      <label class="lab-label" for="analysis-view">{{ book.zone_view }}</label>
+      <input class="lab-input" id="analysis-view" name="view_id" type="text" value="{{ view_id }}">
+      <p class="lab-caption">{{ book.toggle_help }}</p>
+      {% for item in toggles %}
+      <label class="lab-check">
+        <input name="{{ item.name }}" type="checkbox" value="1" checked>
+        {{ item.label }}
+      </label>
+      {% endfor %}
+      <div class="lab-table-wrap">
+        <table class="lab-table" id="zone-vertices">
+          <thead>
+            <tr>
+              <th>{{ book.zone_name }}</th>
+              <th>{{ book.zone_x }}</th>
+              <th>{{ book.zone_y }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in zone_rows %}
+            <tr>
+              <td>
+                <select name="zone">
+                  <option value=""{% if not row.zone %} selected{% endif %}></option>
+                  {% for name in zone_names %}
+                  <option value="{{ name }}"{% if row.zone == name %} selected{% endif %}>{{ name }}</option>
+                  {% endfor %}
+                </select>
+              </td>
+              <td><input name="x" type="number" min="0" max="1" step="any" value="{{ row.x }}"></td>
+              <td><input name="y" type="number" min="0" max="1" step="any" value="{{ row.y }}"></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% if zone_size_unknown %}
+      <p class="lab-caption">{{ zone_size_unknown }}</p>
+      {% endif %}
+      {% if zone_preview_error %}
+      <p class="lab-alert" role="alert">{{ zone_preview_error }}</p>
+      {% endif %}
+      {% if zone_preview_url %}
+      <img id="zone-preview" alt="" src="{{ zone_preview_url }}">
+      {% endif %}
+      <button type="submit" class="lab-button" id="analysis-zone-save" formaction="/analysis/zones">{{ book.zone_save }}</button>
+      <button type="submit" class="lab-button" id="analysis-export"{% if not export_enabled %} disabled{% endif %}>{{ book.analysis_export }}</button>
+      <p class="lab-caption">{{ book.analysis_export_help }}</p>
+    </form>
+  </section>
+  <script src="/static/lab.js"></script>
+  {% endif %}
+</div>
+{% endblock %}

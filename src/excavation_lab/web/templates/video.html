@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block main %}
+<h1 class="lab-title">{{ page_title }}</h1>
+<p class="lab-lead">{{ lead }}</p>
+{% if flash_error %}
+<p class="lab-alert" role="alert">{{ flash_error }}</p>
+{% endif %}
+{% if flash_notice %}
+<p class="lab-alert" role="status">{{ flash_notice }}</p>
+{% endif %}
+{% if list_error %}
+<p class="lab-alert" role="alert">{{ list_error }}</p>
+{% endif %}
+{% if not project_id %}
+<p class="lab-empty">{{ need_project }}</p>
+{% else %}
+{% if not has_video %}
+<p class="lab-empty">{{ add_local_video }}</p>
+{% if allowed_caption %}
+<p class="lab-caption">{{ allowed_caption }}</p>
+{% endif %}
+{% elif video_options|length > 1 %}
+<form class="lab-form" method="get" action="/">
+  <label class="lab-label" for="video-choice">{{ choice_label }}</label>
+  <select class="lab-select" id="video-choice" name="video">
+    {% for item in video_options %}
+    <option value="{{ item.id }}"{% if item.selected %} selected{% endif %}>{{ item.label }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit" class="lab-button">{{ choice_label }}</button>
+</form>
+{% endif %}
+<form class="lab-form" method="post" action="/video/choose">
+  <label class="lab-label" for="local-path">{{ local_path_label }}</label>
+  <input class="lab-input" id="local-path" type="text" value="{{ local_path }}" readonly>
+  <button type="submit" class="lab-button">{{ choose_file_button }}</button>
+</form>
+{% if has_video %}
+<div class="lab-video">
+  <div class="lab-stage">
+    {% if play_error %}
+    <p class="lab-alert" role="alert">{{ play_error }}</p>
+    {% endif %}
+    {% if media_url %}
+    <p class="lab-alert" id="playback-failed" role="alert" hidden>{{ playback_failed }}</p>
+    <video controls preload="metadata" src="{{ media_url }}"></video>
+    {% endif %}
+  </div>
+  {% if probe_note %}
+  <p class="lab-alert" role="status">{{ probe_note }}</p>
+  {% endif %}
+  <ul class="lab-meta">
+    {% for line in metadata_lines %}
+    <li>{{ line }}</li>
+    {% endfor %}
+  </ul>
+  {% if rotation_text %}
+  <p class="lab-caption">{{ rotation_text }}</p>
+  {% endif %}
+  {% if offset_text %}
+  <p class="lab-caption">{{ offset_text }}</p>
+  {% endif %}
+  <form class="lab-form" method="post" action="/video/baseline">
+    <input type="hidden" name="video_id" value="{{ selected_video_id }}">
+    <label class="lab-label" for="interval-start">{{ interval_start_label }}</label>
+    <input class="lab-input" id="interval-start" name="start_s" type="number" min="0" step="0.1"{% if start_value is not none %} value="{{ start_value }}"{% endif %}>
+    <label class="lab-label" for="interval-end">{{ interval_end_label }}</label>
+    <input class="lab-input" id="interval-end" name="end_s" type="number" min="0" step="0.1"{% if end_value is not none %} value="{{ end_value }}"{% endif %}>
+    <p class="lab-caption">{{ interval_help }}</p>
+    <button type="submit" class="lab-button"{% if blocked %} disabled{% endif %}>{{ baseline_button }}</button>
+    <p class="lab-caption">{{ baseline_caption }}</p>
+    {% if baseline_help %}
+    <p class="lab-caption">{{ baseline_help }}</p>
+    {% endif %}
+  </form>
+</div>
+{% if media_url %}
+<script>
+(function () {
+  var video = document.querySelector(".lab-stage video");
+  var failed = document.getElementById("playback-failed");
+  if (!video || !failed) {
+    return;
+  }
+  video.addEventListener("error", function () {
+    video.hidden = true;
+    failed.hidden = false;
+  });
+})();
+</script>
+{% endif %}
+<section class="lab-runs">
+  <h2 class="lab-section">{{ runs_heading }}</h2>
+  <form method="get" action="/">
+    <button type="submit" class="lab-button">{{ refresh_runs }}</button>
+  </form>
+  {% if run_rows %}
+  {% for row in run_rows %}
+  {{ row | safe }}
+  {% endfor %}
+  <p class="lab-caption">{{ runs_no_boxes }}</p>
+  {% else %}
+  <p class="lab-caption">{{ runs_empty }}</p>
+  {% endif %}
+</section>
+{% endif %}
+{% endif %}
+{% endblock %}

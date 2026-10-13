@@ -1,0 +1,21 @@
+---
+description: Russian page server, localhost, and the single local worker
+globs: src/excavation_lab/web/**,src/excavation_lab/ui/**,src/excavation_lab/cli.py,src/excavation_lab/jobs.py,src/excavation_lab/storage.py
+alwaysApply: false
+---
+
+# Web UI and worker
+
+Product name: **Cadence**. Copy in Russian; identifiers in English. Explain controls; do not dump every Python field on the main form. Advanced holds the rest. No emoji chrome.
+
+v0.1 pages: «Видео», «Данные и разметка», «Обучение», «Анализ», «Качество». «События» is hidden or explicitly unavailable until v0.2. No MP4 → show the add path, not a dead demo player. No dataset or checkpoint → no invented metrics and no heuristic boxes labeled as a model. No loss curve before real logs. No ETA before several measured steps.
+
+The working video is an encoded MP4 via HTTP Range. Diagnosis is one frame plus a table. Progress is a later request that reads the atomic progress JSON. Zone editing is a vertex table and a preview, not a canvas framework.
+
+Bind localhost only, telemetry off. No auth, so do not expose the app. Paths and ZIP entries are checked for traversal; cap unpack size. Do not eval user YAML or Python. Do not send video, frames, or labels to an API. Official weight download may use the network once, after a clear notice; later runs use the local cache.
+
+**Worker:** train and long inference run in a child process, one GPU/MPS job. A second click or a second request must not start another. The UI must not hold a second model copy while the worker runs. Progress JSON is atomic. Statuses: `queued`, `running`, `completed`, `failed`, `cancel_requested`, `cancelled`. `completed` only after processing finishes, the encoder closes, and required artifacts exist. Cancel stops that process and releases memory; partial output sets `partial=true` and a real `analyzed_end_s`. Reopening the UI must not duplicate a job; honor PID/lock and surface orphaned failures. Subprocesses use argument arrays, never `shell=True`.
+
+SQLite holds jobs, media, versions, manifests, review. Frame-level results are chunked Parquet. Video bytes stay on disk. CSV numbers use a decimal point and UTF-8; Excel export may add a BOM. Empty means unknown, not zero. Guard formula prefixes in exported notes.
+
+CLI entry point `excavation` matches spec §23 and returns non-zero on error, with a JSON result mode. `--final` evaluates a frozen dataset, model, and config; it does not train.

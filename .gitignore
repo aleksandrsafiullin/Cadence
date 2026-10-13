@@ -1,0 +1,26 @@
+.venv/
+workspace/
+
+*.mp4
+*.mov
+*.mkv
+*.pth
+*.pt
+*.ckpt
+*.sqlite
+*.parquet
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+.DS_Store
+
+# uv.lock is tracked. Do not ignore it.
