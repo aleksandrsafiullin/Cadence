@@ -13,6 +13,7 @@ confirmed vehicle boxes. A one-frame miss drops the excavator anchor.
 from __future__ import annotations
 
 import math
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 
@@ -109,6 +110,7 @@ class TrackingSession:
         vehicles: VehicleTrackers,
         bucket: BucketAssociator | None = None,
         bed: BedTruckAssociator | None = None,
+        class_names: Collection[str] | None = None,
     ) -> None:
         if not run_id:
             raise ValueError("run_id is required")
@@ -116,8 +118,15 @@ class TrackingSession:
         self.video_id = video_id
         self.view_id = view_id
         self.vehicles = vehicles
-        self.bucket = bucket if bucket is not None else BucketAssociator.from_pilot()
-        self.bed = bed if bed is not None else BedTruckAssociator.from_pilot()
+        self.class_names = None if class_names is None else frozenset(class_names)
+        self.bucket = (
+            bucket
+            if bucket is not None
+            else BucketAssociator.from_pilot(class_names=self.class_names)
+        )
+        self.bed = (
+            bed if bed is not None else BedTruckAssociator.from_pilot(class_names=self.class_names)
+        )
         # In-place updates so a reader that kept the dict sees ``reset``.
         self.last_positions: dict[str, LastPosition] = {}
         self._last_source_time_s: float | None = None

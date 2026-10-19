@@ -1,14 +1,19 @@
 """Export one frozen split's sampled frames as a CVAT batch zip.
 
 The archive is an annotation batch, not an RF-DETR training snapshot.
-There is no ``_annotations.coco.json`` at the root. Split columns are
-copied from the frozen manifest. This module does not propose or rewrite
-a split.
+There is no ``_annotations.coco.json`` at the root. ``split`` is the
+frozen block role. A haul episode id is not written. This module does
+not propose or rewrite a split.
+
+``labels.yaml`` and the class table in the instructions are the project
+catalog at export time, including each class ``box`` phrase. ``title``
+and ``box`` are copied as text. A class with no boxes yet is still listed.
 
 JPEG bytes come from the sampler cache when the file matches the sample
-hash. Otherwise the streaming reader encodes that frame. PTS and the time
-base always come from the reader: the cache has no clock. Images are not
-sent to a network API.
+hash. Otherwise the reader seeks to that frame and encodes it. PTS and the
+time base come from the sample row when it recorded them; a legacy row
+without PTS is read from the file the same way. Images are not sent to a
+network API.
 
 Validation and test never include ``predictions.coco.json``, including
 when the caller asks for predictions. A train file is written only on
@@ -34,19 +39,22 @@ import cv2
 import numpy as np
 from pydantic import Field, ValidationError
 
+from excavation_lab.datasets.catalog import (
+    StoredCatalog,
+    StoredCatalogClass,
+    require_project_catalog,
+)
 from excavation_lab.datasets.geometry import xyxy_to_xywh
-from excavation_lab.datasets.sampler import SampleResult, SampleRow
+from excavation_lab.datasets.label_store import frozen_fields_for
+from excavation_lab.datasets.sampler import SampleResult, SampleRow, decode_frame_at
 from excavation_lab.datasets.splits import FrozenSplit, require_frozen
 from excavation_lab.errors import LabError, MediaNotFoundError, TimebaseError
 from excavation_lab.media.reader import FrameReader
 from excavation_lab.schemas import (
     SCHEMA_VERSION,
-    DecodeStatus,
     DetectionClassName,
     SplitName,
     StrictModel,
-    canonical_class_id,
-    labels_path,
     load_labels,
     repo_root,
 )
@@ -151,6 +159,7 @@ def export_cvat(
     video_id, split = _parse_batch_id(batch_id)
     project_dir = project_directory(workspace, project_id)
     video = get_video(workspace, project_id, video_id)
+    catalog = require_project_catalog(workspace, project_id)
     frozen = require_frozen(workspace, project_id, video_id)
     sample = _load_sample(project_dir, project_id, video_id)
     if sample.split_content_hash != frozen.content_hash:
@@ -169,6 +178,7 @@ def export_cvat(
     boxes = _checked_predictions(predictions) if write_predictions else ()
     members = _members(
         shipped,
+        catalog=catalog,
         write_predictions=write_predictions,
         boxes=boxes,
     )
@@ -341,25 +351,7 @@ def _frozen_fields(
     frozen: FrozenSplit,
     row: SampleRow,
 ) -> tuple[SplitName, str, float, float] | None:
-    """Split and group copied from the frozen manifest. ``None`` if unlabeled."""
-    if row.episode_id:
-        matches = [
-            episode for episode in frozen.episodes if episode.episode_id == row.episode_id
-        ]
-        if len(matches) != 1:
-            raise LabError(
-                "episode_not_found",
-                f"Эпизод «{row.episode_id}» не найден в зафиксированном разбиении. "
-                "Split не пересчитывается.",
-            )
-        episode = matches[0]
-        return episode.split, episode.split_group_id, episode.start_s, episode.end_s
-    for block in frozen.blocks:
-        if block.role not in {"train", "validation", "test"}:
-            continue
-        if block.start_s <= row.source_time_s < block.end_s:
-            return SplitName(block.role), "", block.start_s, block.end_s
-    return None
+    return frozen_fields_for(frozen, row.source_time_s)
 
 
 def _ship_frames(
@@ -388,6 +380,7 @@ def _ship_frames(
                 )
             payload = _encode_jpeg(meta.image)
         width, height = _jpeg_size(payload)
+        # The split is the block role. A leftover haul episode id is left blank.
         shipped.append(
             _Shipped(
                 image_file=item.row.image_file,
@@ -396,7 +389,7 @@ def _ship_frames(
                 source_pts=meta.source_pts,
                 time_base=meta.time_base,
                 source_time_s=meta.source_time_s,
-                episode_id=item.row.episode_id,
+                episode_id="",
                 split=item.split.value,
                 split_group_id=item.split_group_id,
                 image_sha256=hashlib.sha256(payload).hexdigest(),
@@ -422,47 +415,62 @@ def _read_selected(
     chosen: Sequence[_Chosen],
     cached_indexes: set[int],
 ) -> dict[int, _Observed]:
-    needed = {item.row.source_frame_index: item for item in chosen}
+    """Clock and, when the cache misses, pixels for every chosen row.
+
+    A sample row that carries ``source_pts`` and has a matching cached JPEG
+    needs no read at all. A legacy row (no PTS) or a cache miss seeks to that
+    one frame; the block windows are never decoded in full.
+    """
     found: dict[int, _Observed] = {}
-    windows: list[tuple[float, float]] = []
-    seen_windows: set[tuple[float, float]] = set()
+    reader: FrameReader | None = None
     for item in chosen:
-        key = (item.start_s, item.end_s)
-        if key not in seen_windows:
-            seen_windows.add(key)
-            windows.append(key)
-    reader = FrameReader(media, video_id=video_id)
-    for start_s, end_s in windows:
-        for frame in reader.iterate(start_s, end_s):
-            index = frame.source_frame_index
-            if index is None or index not in needed or index in found:
-                continue
-            if frame.decode_status is not DecodeStatus.ok:
-                continue
-            if frame.source_pts is None or frame.source_time_s is None:
-                raise TimebaseError(
-                    f"У кадра {index} нет PTS. Подставное время не записывается."
-                )
-            if not isinstance(frame.source_pts, int) or isinstance(frame.source_pts, bool):
-                raise TimebaseError(
-                    f"У кадра {index} нет PTS. Подставное время не записывается."
-                )
-            image = None
-            if index not in cached_indexes:
-                if frame.image is None:
-                    continue
-                image = np.ascontiguousarray(frame.image).copy()
+        row = item.row
+        index = row.source_frame_index
+        if index in found:
+            continue
+        if row.source_pts is not None and row.time_base is not None and index in cached_indexes:
             found[index] = _Observed(
-                source_pts=frame.source_pts,
-                time_base=frame.time_base,
-                source_time_s=float(frame.source_time_s),
-                image=image,
+                source_pts=row.source_pts,
+                time_base=row.time_base,
+                source_time_s=float(row.source_time_s),
+                image=None,
             )
-    missing = sorted(set(needed) - set(found))
-    if missing:
-        raise LabError(
-            "frame_missing",
-            f"Кадр {missing[0]} не прочитан. Подставной кадр не записывается.",
+            continue
+        if reader is None:
+            reader = FrameReader(media, video_id=video_id)
+        frame = decode_frame_at(
+            reader,
+            source_frame_index=index,
+            source_time_s=row.source_time_s,
+            source_pts=row.source_pts,
+            limit_s=item.end_s,
+        )
+        if frame is None or frame.source_frame_index != index:
+            raise LabError(
+                "frame_missing",
+                f"Кадр {index} не прочитан. Подставной кадр не записывается.",
+            )
+        if frame.source_pts is None or frame.source_time_s is None:
+            raise TimebaseError(
+                f"У кадра {index} нет PTS. Подставное время не записывается."
+            )
+        if not isinstance(frame.source_pts, int) or isinstance(frame.source_pts, bool):
+            raise TimebaseError(
+                f"У кадра {index} нет PTS. Подставное время не записывается."
+            )
+        image = None
+        if index not in cached_indexes:
+            if frame.image is None:
+                raise LabError(
+                    "frame_missing",
+                    f"Кадр {index} не декодирован. Подставной кадр не записывается.",
+                )
+            image = np.ascontiguousarray(frame.image).copy()
+        found[index] = _Observed(
+            source_pts=frame.source_pts,
+            time_base=frame.time_base,
+            source_time_s=float(frame.source_time_s),
+            image=image,
         )
     return found
 
@@ -542,16 +550,17 @@ def _checked_predictions(
 def _members(
     shipped: Sequence[_Shipped],
     *,
+    catalog: StoredCatalog,
     write_predictions: bool,
     boxes: Sequence[PredictionBox],
 ) -> list[tuple[str, bytes]]:
     members: list[tuple[str, bytes]] = [
         ("frames_manifest.csv", _manifest_csv(shipped)),
-        ("labels.yaml", _read_repo_file(labels_path())),
-        (_TEMPLATE_NAME, _read_repo_file(_template_path())),
+        ("labels.yaml", _labels_yaml(catalog)),
+        (_TEMPLATE_NAME, _instructions(catalog)),
     ]
     if write_predictions:
-        members.append(("predictions.coco.json", _predictions_coco(shipped, boxes)))
+        members.append(("predictions.coco.json", _predictions_coco(shipped, boxes, catalog)))
     for frame in shipped:
         members.append((f"images/{frame.image_file}", frame.jpeg))
     return members
@@ -589,17 +598,16 @@ def _manifest_csv(shipped: Sequence[_Shipped]) -> bytes:
 def _predictions_coco(
     shipped: Sequence[_Shipped],
     boxes: Sequence[PredictionBox],
+    catalog: StoredCatalog,
 ) -> bytes:
     by_index = {frame.source_frame_index: frame for frame in shipped}
     image_ids = {
         frame.source_frame_index: image_id
         for image_id, frame in enumerate(shipped, start=1)
     }
-    labels = load_labels()
-    categories = [
-        {"id": item.id, "name": item.name.value}
-        for item in labels.classes
-    ]
+    classes = _catalog_classes(catalog)
+    categories = [{"id": item.id, "name": item.name} for item in classes]
+    category_ids = {item.name: item.id for item in classes}
     images = [
         {
             "id": image_ids[frame.source_frame_index],
@@ -626,7 +634,13 @@ def _predictions_coco(
                 "invalid_prediction",
                 "Рамка предсказания должна иметь положительные ширину и высоту.",
             ) from exc
-        category_id = canonical_class_id(box.class_name)
+        category_id = category_ids.get(box.class_name.value)
+        if category_id is None:
+            raise LabError(
+                "unknown_class",
+                f"Класса «{box.class_name.value}» нет в каталоге проекта. "
+                "Предсказание в пакет не записывается.",
+            )
         annotation: dict[str, Any] = {
             "id": len(annotations) + 1,
             "image_id": image_ids[frame.source_frame_index],
@@ -690,6 +704,109 @@ def _batch_document(
 def _json_bytes(document: Mapping[str, Any]) -> bytes:
     text = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True)
     return (text + "\n").encode("utf-8")
+
+
+def _catalog_classes(catalog: StoredCatalog) -> list[StoredCatalogClass]:
+    return sorted(catalog.classes, key=lambda item: item.id)
+
+
+def _labels_yaml(catalog: StoredCatalog) -> bytes:
+    """Annotation schema at export time. ``added_at`` stays out of the ZIP."""
+    lines = [f"schema_version: {catalog.schema_version}", "classes:"]
+    for item in _catalog_classes(catalog):
+        lines.append(f"  - id: {item.id}")
+        lines.append(f"    name: {item.name}")
+        lines.append(f"    title: {_yaml_string(item.title)}")
+        lines.append(f"    box: {_yaml_string(item.box)}")
+    lines.append("visibility:")
+    for item in catalog.visibility:
+        lines.append(f"  - {item.value}")
+    lines.append("review_status:")
+    for item in catalog.review_status:
+        lines.append(f"  - {item.value}")
+    lines.append("attributes:")
+    for item in catalog.attributes:
+        lines.append(f"  - {item}")
+    lines.append("")
+    return "\n".join(lines).encode("utf-8")
+
+
+def _yaml_string(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _instructions(catalog: StoredCatalog) -> bytes:
+    """Shared rules from the template, class table from the catalog rows."""
+    classes = _catalog_classes(catalog)
+    text = _read_repo_file(_template_path()).decode("utf-8")
+    kept_newline = text.endswith("\n")
+    lines = text.splitlines()
+    start, end = _class_table_span(lines)
+    lines[start : end + 1] = _class_section(classes).splitlines()
+    rendered = "\n".join(lines)
+    if not _same_seed_classes(classes):
+        rendered = rendered.replace(" (тот же набор, что в `configs/labels.yaml`)", "")
+    if len(classes) != 4:
+        rendered = rendered.replace(
+            "В этой версии размечаются только четыре класса объектов.",
+            "В этой версии размечаются классы каталога проекта на момент выгрузки.",
+        )
+        rendered = rendered.replace(
+            "В четыре класса детекции не входят действия и состояния:",
+            "В классы детекции не входят действия и состояния:",
+        )
+    if kept_newline and not rendered.endswith("\n"):
+        rendered += "\n"
+    return rendered.encode("utf-8")
+
+
+def _class_section(classes: Sequence[StoredCatalogClass]) -> str:
+    heading = "## Четыре класса" if len(classes) == 4 else "## Классы каталога"
+    rows = [
+        heading,
+        "",
+        "| ID | Имя | Подпись | Что входит в рамку |",
+        "|---|---|---|---|",
+    ]
+    for item in classes:
+        rows.append(f"| {item.id} | `{item.name}` | {item.title} | {item.box} |")
+    return "\n".join(rows)
+
+
+def _class_table_span(lines: Sequence[str]) -> tuple[int, int]:
+    start: int | None = None
+    for index, line in enumerate(lines):
+        if not line.startswith("## "):
+            continue
+        if index + 2 < len(lines) and lines[index + 2].startswith("| ID |"):
+            start = index
+            break
+    if start is None:
+        raise LabError(
+            "template_missing",
+            "В инструкции нет таблицы классов. Пакет не записывается.",
+        )
+    end = start + 1
+    while end + 1 < len(lines) and lines[end + 1].startswith("|"):
+        end += 1
+    if end == start + 1:
+        raise LabError(
+            "template_missing",
+            "В инструкции нет таблицы классов. Пакет не записывается.",
+        )
+    return start, end
+
+
+def _same_seed_classes(classes: Sequence[StoredCatalogClass]) -> bool:
+    seed = load_labels().classes
+    if len(classes) != len(seed):
+        return False
+    for item, label in zip(classes, seed, strict=True):
+        if item.id != label.id or item.name != label.name.value:
+            return False
+        if item.title != label.title or item.box != label.box:
+            return False
+    return True
 
 
 def _template_path() -> Path:

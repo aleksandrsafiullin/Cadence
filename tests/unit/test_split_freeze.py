@@ -12,12 +12,14 @@ from typer.testing import CliRunner
 from excavation_lab import storage
 from excavation_lab.cli import app
 from excavation_lab.datasets import splits as split_mod
-from excavation_lab.datasets.episodes import EpisodeSpec
+from excavation_lab.datasets.blocks import GUARD_GAP_S, RoleBlock, guard_gap_warnings
+from excavation_lab.datasets.catalog import list_catalogs
 from excavation_lab.datasets.splits import (
+    SAME_SCENE_MESSAGE,
+    SplitProposal,
     load_frozen,
-    propose_split,
     require_frozen,
-    write_proposal,
+    write_blocks,
 )
 from excavation_lab.errors import LabError, SplitHashMismatchError, SplitNotFrozenError
 from excavation_lab.schemas import SCHEMA_VERSION
@@ -46,22 +48,105 @@ def _forbid_propose(*_args: object, **_kwargs: object) -> None:
     raise AssertionError("propose_split")
 
 
+def test_guard_gap_warnings_list_close_role_boundaries_only() -> None:
+    blocks = [
+        RoleBlock(start_s=0, end_s=60, role="train"),
+        RoleBlock(start_s=60, end_s=70, role="train"),
+        RoleBlock(start_s=75, end_s=90, role="validation"),
+        RoleBlock(start_s=100, end_s=110, role="test"),
+        RoleBlock(start_s=119.999999, end_s=130, role="train"),
+        RoleBlock(start_s=138, end_s=150, role="validation"),
+    ]
+    found = guard_gap_warnings(blocks)
+    pairs = [(item.earlier.end_s, item.later.start_s, item.gap_s) for item in found]
+    # train→train touching: not a boundary. 90→100: exactly the guard. 110→119.999999:
+    # within tolerance of the guard. 130→138: under.
+    assert pairs == [(70.0, 75.0, 5.0), (130.0, 138.0, 8.0)]
+    assert found[0].earlier.role == "train" and found[0].later.role == "validation"
+    assert guard_gap_warnings([]) == []
+    assert guard_gap_warnings(blocks[:1]) == []
+    assert GUARD_GAP_S == 10.0
+
+
+def test_cli_freeze_prints_guard_gap_warnings_and_still_freezes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    list_catalogs(workspace)
+    storage.create_project("pilot", workspace, catalog_id="excavation")
+    storage.insert_video(workspace, "pilot", "vid", name="pilot")
+    proposal_path = write_blocks(
+        workspace,
+        "pilot",
+        "vid",
+        [
+            RoleBlock(start_s=0, end_s=60, role="train"),
+            RoleBlock(start_s=63, end_s=90, role="validation"),
+        ],
+    )
+    monkeypatch.setattr(split_mod, "propose_split", _forbid_propose)
+    base = ["dataset", "split-freeze", "--project", "pilot", "--manifest", str(proposal_path)]
+    base += ["--workspace", str(workspace)]
+    text = _RUNNER.invoke(app, base)
+    assert text.exit_code == 0, text.stdout
+    assert "Разбиение зафиксировано" in text.stdout
+    assert "меньше 10 с" in text.stdout
+    assert "train (60 с)" in text.stdout and "validation (63 с)" in text.stdout
+    assert require_frozen(workspace, "pilot", "vid").blocks[1].start_s == 63.0
+
+    again = _RUNNER.invoke(app, [*base, "--json"])
+    assert again.exit_code != 0
+    assert json.loads(again.stdout)["error"]["code"] == "split_frozen"
+
+    storage.insert_video(workspace, "pilot", "vid2", name="second")
+    second = write_blocks(
+        workspace,
+        "pilot",
+        "vid2",
+        [
+            RoleBlock(start_s=0, end_s=60, role="train"),
+            RoleBlock(start_s=63, end_s=90, role="validation"),
+            RoleBlock(start_s=100, end_s=120, role="test"),
+        ],
+    )
+    as_json = _RUNNER.invoke(
+        app,
+        ["dataset", "split-freeze", "--project", "pilot", "--manifest", str(second)]
+        + ["--workspace", str(workspace), "--json"],
+    )
+    assert as_json.exit_code == 0, as_json.stdout
+    data = json.loads(as_json.stdout)["data"]
+    assert data["frozen"] is True
+    assert data["guard_gap_warnings"] == [
+        {
+            "earlier": {"start_s": 0.0, "end_s": 60.0, "role": "train"},
+            "later": {"start_s": 63.0, "end_s": 90.0, "role": "validation"},
+            "gap_s": 3.0,
+        }
+    ]
+    assert "guard_gap_warnings" not in json.loads(
+        Path(data["path"]).read_text(encoding="utf-8")
+    )
+
+
 def test_freeze_hashes_proposal_bytes_and_rejects_tamper_and_refreeze(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workspace = tmp_path / "workspace"
-    storage.create_project("pilot", workspace)
+    list_catalogs(workspace)
+    storage.create_project("pilot", workspace, catalog_id="excavation")
     storage.insert_video(workspace, "pilot", "vid", name="pilot")
-    specs = [
-        EpisodeSpec("train-ep", "vid", "g-train", 0, 60, "погрузка"),
-        EpisodeSpec("val-ep", "vid", "g-val", 72, 92, "погрузка"),
-        EpisodeSpec("test-ep", "vid", "g-test", 104, 124, "погрузка"),
+    blocks = [
+        RoleBlock(start_s=0, end_s=60, role="train"),
+        RoleBlock(start_s=72, end_s=92, role="validation"),
+        RoleBlock(start_s=104, end_s=124, role="test"),
     ]
-    proposal = propose_split("vid", specs)
-    assert proposal.guard_gap_s == 10
+    proposal_path = write_blocks(workspace, "pilot", "vid", blocks)
+    proposal = SplitProposal.model_validate(json.loads(proposal_path.read_text(encoding="utf-8")))
     assert proposal.frozen is False
-    proposal_path = write_proposal(workspace, "pilot", proposal)
+    assert proposal.independence.value == "same_scene"
     reloaded = json.loads(proposal_path.read_text(encoding="utf-8"))
     assert reloaded["frozen"] is False
 
@@ -97,8 +182,9 @@ def test_freeze_hashes_proposal_bytes_and_rejects_tamper_and_refreeze(
     assert data["frozen"] is True
     assert data["schema_version"] == SCHEMA_VERSION
     assert data["video_id"] == "vid"
-    assert data["independence"] == "episode_split"
-    assert data["guard_gap_s"] == 10
+    assert data["independence"] == "same_scene"
+    assert "guard_gap_s" not in data
+    assert data["message"] == SAME_SCENE_MESSAGE
     manifest_path = Path(data["path"])
     project_dir = storage.project_directory(workspace, "pilot")
     assert manifest_path.name == "split_manifest.json"
@@ -125,18 +211,25 @@ def test_freeze_hashes_proposal_bytes_and_rejects_tamper_and_refreeze(
         "video_id",
         "independence",
         "limitation",
-        "guard_gap_s",
+        "message",
+        "blocks",
         "episodes",
         "guards",
         "content_hash",
     ):
         assert key in document
-    assert document["guards"]
-    assert all(guard["role"] == "excluded_guard" for guard in document["guards"])
+    assert "guard_gap_s" not in document
+    assert "excluded_guard" not in expected_file.decode("utf-8")
+    assert "episode_split" not in expected_file.decode("utf-8")
+    assert document["episodes"] == []
+    assert document["guards"] == []
+    assert document["message"] == SAME_SCENE_MESSAGE
+    assert "переносим" not in document["message"]
+    assert "transfer" not in document["message"].casefold()
     stored_hash = document.pop("content_hash")
     assert _canonical(document) == expected_body
     assert stored_hash == digest
-    assert [episode["split"] for episode in document["episodes"]] == [
+    assert [block["role"] for block in document["blocks"]] == [
         "train",
         "validation",
         "test",
@@ -145,9 +238,11 @@ def test_freeze_hashes_proposal_bytes_and_rejects_tamper_and_refreeze(
     loaded = require_frozen(workspace, "pilot", "vid")
     assert loaded.content_hash == digest
     assert loaded.frozen is True
-    assert [(episode.episode_id, episode.split.value) for episode in loaded.episodes] == [
-        (episode.episode_id, episode.split.value) for episode in proposal.episodes
+    assert [(block.role, block.start_s, block.end_s) for block in loaded.blocks] == [
+        (block.role, block.start_s, block.end_s) for block in proposal.blocks
     ]
+    assert loaded.assignment_at(10) == "train"
+    assert loaded.assignment_at(65) is None
     assert json.loads(proposal_path.read_text(encoding="utf-8"))["frozen"] is False
 
     with storage.connect(storage.project_sqlite(workspace, "pilot")) as connection:
@@ -181,9 +276,8 @@ def test_freeze_hashes_proposal_bytes_and_rejects_tamper_and_refreeze(
     manifest_path.write_bytes(expected_file)
 
     tampered = json.loads(manifest_path.read_bytes())
-    assert tampered["episodes"][0]["episode_id"] == "train-ep"
-    assert tampered["episodes"][0]["split"] == "train"
-    tampered["episodes"][0]["split"] = "test"
+    assert tampered["blocks"][0]["role"] == "train"
+    tampered["blocks"][0]["end_s"] = 70
     assert tampered["content_hash"] == digest
     manifest_path.write_bytes(json.dumps(tampered, ensure_ascii=False).encode("utf-8"))
     with pytest.raises(SplitHashMismatchError) as mismatch:

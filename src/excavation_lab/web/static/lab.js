@@ -51,14 +51,12 @@
   var active = { queued: true, running: true, cancel_requested: true };
   var terminal = { completed: true, failed: true, cancelled: true };
   var status = node.getAttribute("data-status") || "";
-  if (!active[status]) {
-    return;
-  }
   var url = node.getAttribute("data-progress-url") || "";
   if (!url || url.indexOf("://") !== -1) {
     return;
   }
-  var timer = window.setInterval(function () {
+  var timer = 0;
+  function read() {
     window
       .fetch(url, { headers: { Accept: "application/json" } })
       .then(function (response) {
@@ -79,10 +77,18 @@
         if (body.chart != null && typeof window.labReplaceLossChart === "function") {
           window.labReplaceLossChart(body.chart);
         }
-        if (terminal[body.status]) {
+        if (timer && terminal[body.status]) {
           window.clearInterval(timer);
         }
       })
       .catch(function () {});
-  }, 2000);
+  }
+  if (terminal[status]) {
+    read();
+    return;
+  }
+  if (!active[status]) {
+    return;
+  }
+  timer = window.setInterval(read, 2000);
 })();

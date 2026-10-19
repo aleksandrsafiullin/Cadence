@@ -16,6 +16,7 @@ import pytest
 from typer.testing import CliRunner
 
 from excavation_lab.cli import app
+from excavation_lab.datasets.catalog import list_catalogs
 from excavation_lab.errors import (
     CorruptMediaError,
     FfmpegMissingError,
@@ -52,7 +53,8 @@ def _cyrillic(text: str) -> bool:
 
 def _project(tmp_path: Path) -> Path:
     workspace = tmp_path / "workspace"
-    create_project("pilot", workspace)
+    list_catalogs(workspace)
+    create_project("pilot", workspace, catalog_id="excavation")
     return workspace
 
 

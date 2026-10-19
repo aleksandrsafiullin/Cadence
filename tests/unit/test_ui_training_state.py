@@ -13,6 +13,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from excavation_lab import jobs as job_module
+from excavation_lab.datasets.catalog import list_catalogs
 from excavation_lab.errors import JobAlreadyRunningError
 from excavation_lab.jobs import PROGRESS_FILENAME, reopen
 from excavation_lab.schemas import JobRecord, JobStatus
@@ -200,7 +201,8 @@ def test_running_job_disables_the_start_button(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    create_project("pilot", tmp_path)
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
     monkeypatch.setattr(
         training_page,
         "reopen",
@@ -222,7 +224,8 @@ def test_running_job_disables_the_start_button(
 
 
 def test_profile_defaults_fill_advanced_fields(tmp_path: Path) -> None:
-    create_project("pilot", tmp_path)
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
     book = ui_copy.catalog("ru")
     with TestClient(create_app(tmp_path)) as client:
         page = client.get("/training")
@@ -267,7 +270,8 @@ def test_not_ready_dataset_does_not_enqueue_twice(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    create_project("pilot", tmp_path)
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
     snapshot = tmp_path / "snapshot"
     snapshot.mkdir()
     _insert_dataset(tmp_path, "snapshot", snapshot)
@@ -301,7 +305,8 @@ def test_start_without_a_dataset_does_not_enqueue(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    create_project("pilot", tmp_path)
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
     calls = {"n": 0}
 
     def fail(*_args: object, **_kwargs: object) -> None:
@@ -327,7 +332,8 @@ def test_post_during_an_active_job_does_not_enqueue(
     tmp_path: Path,
     status: str,
 ) -> None:
-    create_project("pilot", tmp_path)
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
     pid = os.getpid() if status == "running" else None
     _insert_job(tmp_path, "activejob01", status=status, pid=pid)
     calls = {"n": 0}
@@ -352,7 +358,8 @@ def test_variant_mismatch_post_does_not_enqueue(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    create_project("pilot", tmp_path)
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
     snapshot = tmp_path / "snapshot"
     snapshot.mkdir()
     _insert_dataset(tmp_path, "snapshot", snapshot)
@@ -373,7 +380,8 @@ def test_overfit_is_not_on_the_form(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    create_project("pilot", tmp_path)
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
     calls = {"n": 0}
 
     def fail(*_args: object, **_kwargs: object) -> None:
@@ -394,7 +402,8 @@ def test_cancel_uses_the_active_job_and_ignores_another_pid(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    create_project("pilot", tmp_path)
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
     job_id = "activejob01"
     _insert_job(tmp_path, job_id, status="queued")
     seen: list[str] = []
@@ -433,7 +442,8 @@ def test_cancel_uses_the_active_job_and_ignores_another_pid(
 
 
 def test_two_measured_epochs_on_the_page_have_no_eta(tmp_path: Path) -> None:
-    create_project("pilot", tmp_path)
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
     job_id = "epochjob01"
     run_dir = _insert_job(tmp_path, job_id, status="completed")
     (run_dir / "train_request.json").write_text(
@@ -457,7 +467,8 @@ def test_two_measured_epochs_on_the_page_have_no_eta(tmp_path: Path) -> None:
 
 
 def test_header_only_log_on_the_page_is_not_a_curve(tmp_path: Path) -> None:
-    create_project("pilot", tmp_path)
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
     job_id = "headerjob1"
     run_dir = _insert_job(tmp_path, job_id, status="completed")
     (run_dir / "train_request.json").write_text(
@@ -480,7 +491,8 @@ def test_header_only_log_on_the_page_is_not_a_curve(tmp_path: Path) -> None:
 
 
 def test_progress_payload_includes_orphaned_and_the_status_line(tmp_path: Path) -> None:
-    create_project("pilot", tmp_path)
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
     job_id = "orphaned01"
     run_dir = _insert_job(
         tmp_path,
@@ -546,7 +558,8 @@ def test_progress_payload_includes_orphaned_and_the_status_line(tmp_path: Path) 
 
 
 def test_poll_uses_a_relative_progress_url(tmp_path: Path) -> None:
-    create_project("pilot", tmp_path)
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
     job_id = "queuedjob01"
     _insert_job(tmp_path, job_id, status="queued")
     script = (

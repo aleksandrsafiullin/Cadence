@@ -19,16 +19,12 @@ import pyarrow.parquet as pq
 import pytest
 
 from excavation_lab import jobs
+from excavation_lab.datasets.blocks import RoleBlock
+from excavation_lab.datasets.catalog import list_catalogs
 from excavation_lab.datasets.coco_import import import_coco, load_imported_frames
 from excavation_lab.datasets.cvat_export import MANIFEST_COLUMNS
 from excavation_lab.datasets.sampler import sample_frames
-from excavation_lab.datasets.splits import (
-    TimelineBlock,
-    freeze_split,
-    load_frozen,
-    propose_for_project,
-    write_proposal,
-)
+from excavation_lab.datasets.splits import freeze_split, load_frozen, write_blocks
 from excavation_lab.media.probe import add_video, ffprobe_json
 from excavation_lab.media.reader import FrameReader
 from excavation_lab.models import baseline as baseline_mod
@@ -44,8 +40,7 @@ from excavation_lab.tracking import analyze as analyze_mod
 from excavation_lab.tracking.analyze import FAKE_DETECTOR_ENV, AnalyzePipeline
 from excavation_lab.visualization.export_video import encode_annotated_video
 
-# Two 10 s guards. Assignable time is duration minus those gaps, and the
-# second guard has to end before the probed duration.
+# Operator blocks on the synthetic clip. Not a generated split.
 _SECONDS = 25.0
 _SOURCE_FPS = 2
 _START_S = 0.0
@@ -79,7 +74,8 @@ def test_synthetic_clip_reaches_preview(tmp_path: Path, monkeypatch: pytest.Monk
     assert _TRUCK[2] <= _IMAGE_WIDTH and _TRUCK[3] <= _IMAGE_HEIGHT
 
     workspace = tmp_path / "workspace"
-    create_project("pilot", workspace)
+    list_catalogs(workspace)
+    create_project("pilot", workspace, catalog_id="excavation")
     clip = workspace / "clip.mp4"
     write_synthetic_mp4(clip, _SECONDS, _SOURCE_FPS)
     video = add_video(workspace, "pilot", clip)
@@ -87,12 +83,19 @@ def test_synthetic_clip_reaches_preview(tmp_path: Path, monkeypatch: pytest.Monk
     assert probed > _END_S
     video_id = video["video_id"]
 
-    proposal = propose_for_project(workspace, "pilot", video_id)
-    assert proposal.episodes == []
-    assert proposal.duration_s == pytest.approx(probed)
-    proposal_path = write_proposal(workspace, "pilot", proposal)
+    proposal_path = write_blocks(
+        workspace,
+        "pilot",
+        video_id,
+        [
+            RoleBlock(start_s=0, end_s=10, role="train"),
+            RoleBlock(start_s=10, end_s=15, role="validation"),
+            RoleBlock(start_s=15, end_s=20, role="test"),
+        ],
+    )
     frozen, _manifest = freeze_split(workspace, "pilot", proposal_path)
     assert frozen.episodes == []
+    assert frozen.independence.value == "same_scene"
     digest = frozen.content_hash
 
     sampled = sample_frames(
@@ -212,7 +215,7 @@ def _scripted_detector() -> FakeDetector:
     )
 
 
-def _covers(blocks: list[TimelineBlock], time_s: float) -> bool:
+def _covers(blocks: list[RoleBlock], time_s: float) -> bool:
     return any(block.start_s <= time_s < block.end_s for block in blocks)
 
 

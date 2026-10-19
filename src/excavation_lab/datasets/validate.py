@@ -30,7 +30,6 @@ from excavation_lab.datasets.snapshot import RFDETR_SPLIT_DIRECTORIES
 from excavation_lab.errors import LabError
 from excavation_lab.schemas import (
     SCHEMA_VERSION,
-    DetectionClassName,
     ReviewStatus,
     SplitName,
     StrictModel,
@@ -38,7 +37,6 @@ from excavation_lab.schemas import (
 from excavation_lab.storage import connect, project_sqlite
 
 _HEX = re.compile(r"^[0-9a-f]{64}$")
-_REQUIRED_CLASSES = tuple(item.value for item in DetectionClassName)
 _NOT_FOUND = (
     "Снимок датасета не найден. Сначала соберите снимок командой dataset snapshot."
 )
@@ -139,7 +137,7 @@ def validate_snapshot(
         )
     _append_crossovers(groups, errors)
     # Missing train or validation classes stay missing. test is not a donor.
-    _append_missing_classes(present, errors)
+    _append_missing_classes(present, _catalog_names(mapping), errors)
     warnings: list[ValidationIssue] = []
     if not present[SplitName.test]:
         warnings.append(
@@ -589,13 +587,19 @@ def _append_crossovers(
         )
 
 
+def _catalog_names(mapping: Mapping[str, int]) -> tuple[str, ...]:
+    """Class names required by this snapshot, in catalog id order."""
+    return tuple(name for name, _class_id in sorted(mapping.items(), key=lambda item: item[1]))
+
+
 def _append_missing_classes(
     present: Mapping[SplitName, set[str]],
+    required: Sequence[str],
     errors: list[ValidationIssue],
 ) -> None:
     for split in (SplitName.train, SplitName.validation):
         found = present[split]
-        for name in _REQUIRED_CLASSES:
+        for name in required:
             if name in found:
                 continue
             errors.append(

@@ -52,7 +52,7 @@
     <label class="lab-label" for="analysis-bundle">{{ book.bundle_label }}</label>
     <select class="lab-select" id="analysis-bundle" name="bundle">
       {% for item in bundles %}
-      <option value="{{ item }}"{% if item == bundle %} selected{% endif %}>{{ item }}</option>
+      <option value="{{ item.id }}"{% if item.id == bundle %} selected{% endif %}>{{ item.label }}</option>
       {% endfor %}
     </select>
     {% else %}
@@ -79,7 +79,7 @@
     <p class="lab-caption">{{ book.analysis_player_help }}</p>
     <label class="lab-label" for="analysis-view-start">{{ book.zone_view }}</label>
     <input class="lab-input" id="analysis-view-start" name="view_id" type="text" value="{{ view_id }}">
-    <button type="submit" class="lab-button" id="analysis-start-button"{% if not start_enabled %} disabled{% endif %}>{{ book.analysis_start }}</button>
+    <button type="submit" class="lab-button" id="analysis-start-button"{% if not start_enabled %} disabled{% if blocked_message %} title="{{ blocked_message }}"{% endif %}{% endif %}>{{ book.analysis_start }}</button>
     <p class="lab-caption">{{ book.analysis_start_help }}</p>
     <details class="lab-details">
       <summary>{{ book.advanced }}</summary>
@@ -284,7 +284,10 @@
       <img id="zone-preview" alt="" src="{{ zone_preview_url }}">
       {% endif %}
       <button type="submit" class="lab-button" id="analysis-zone-save" formaction="/analysis/zones">{{ book.zone_save }}</button>
-      <button type="submit" class="lab-button" id="analysis-export"{% if not export_enabled %} disabled{% endif %}>{{ book.analysis_export }}</button>
+      <button type="submit" class="lab-button" id="analysis-export"{% if not export_enabled %} disabled title="{{ blocked_message or book.export_no_run }}"{% endif %}>{{ book.analysis_export }}</button>
+      {% if not export_enabled %}
+      <p class="lab-caption">{{ blocked_message or book.export_no_run }}</p>
+      {% endif %}
       <p class="lab-caption">{{ book.analysis_export_help }}</p>
     </form>
   </section>

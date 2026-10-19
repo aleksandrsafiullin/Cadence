@@ -20,7 +20,7 @@ no reliable bucket observation. It is not a dump and it has no event id.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 
 from excavation_lab.datasets.zones import (
@@ -36,6 +36,16 @@ from excavation_lab.schemas import (
     load_pilot,
 )
 from excavation_lab.tracking.vehicles import BUCKET, EXCAVATOR_BODY
+
+# Both names are required. A catalog with only one of them does not open a track.
+_BUCKET_RULE = frozenset({"bucket", "excavator_body"})
+
+
+def _bucket_rule(names: frozenset[str] | None) -> bool:
+    if names is None:
+        return True
+    return _BUCKET_RULE <= names
+
 
 # Starting gate in body lengths, not a tuned optimum and not a pixel radius.
 MAX_NORMALIZED_CENTER_DISTANCE = 2.0
@@ -178,6 +188,7 @@ class BucketAssociator:
         detection_floor: float,
         display_threshold: float,
         max_normalized_distance: float = MAX_NORMALIZED_CENTER_DISTANCE,
+        class_names: Collection[str] | None = None,
     ) -> None:
         self.trail_s = _require_range("trail_s", trail_s, upper=None)
         self.trail_gap_s = _require_range("trail_gap_s", trail_gap_s, upper=None)
@@ -190,12 +201,18 @@ class BucketAssociator:
             max_normalized_distance,
             upper=None,
         )
+        self.class_names = None if class_names is None else frozenset(class_names)
         self._tracks: list[_Track] = []
         self._next_local_id = 0
         self.last_frame: BucketFrame | None = None
 
     @classmethod
-    def from_pilot(cls, pilot: PilotConfig | None = None) -> BucketAssociator:
+    def from_pilot(
+        cls,
+        pilot: PilotConfig | None = None,
+        *,
+        class_names: Collection[str] | None = None,
+    ) -> BucketAssociator:
         loaded = load_pilot() if pilot is None else pilot
         return cls(
             trail_s=loaded.bucket.trail_s,
@@ -204,7 +221,12 @@ class BucketAssociator:
             ambiguity_margin=loaded.bucket.ambiguity_margin,
             detection_floor=loaded.detection_floor,
             display_threshold=loaded.display_threshold,
+            class_names=class_names,
         )
+
+    def enabled(self) -> bool:
+        """False unless the name set contains ``bucket`` and ``excavator_body``."""
+        return _bucket_rule(self.class_names)
 
     def reset(self) -> None:
         """Drop the trail, the copied parent, and the last frame.
@@ -240,6 +262,16 @@ class BucketAssociator:
         if not isinstance(video_id, str) or not video_id:
             raise ValueError("video_id is required")
         stamp = float(source_time_s)
+        if not self.enabled():
+            self._tracks.clear()
+            frame = BucketFrame(
+                source_time_s=stamp,
+                multiple_excavators=False,
+                bucket_observation_state=ObservationState.missing,
+                observations=(),
+            )
+            self.last_frame = frame
+            return frame
         anchors = _anchors(bodies)
         multiple = len(anchors) >= 2
         working_area = active_working_area_pixels(

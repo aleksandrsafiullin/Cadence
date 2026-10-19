@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import errno
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
 from excavation_lab.cli import app
+from excavation_lab.datasets.catalog import catalog_from_seed, list_catalogs
 from excavation_lab.datasets.coco_import import build_class_mapping
 from excavation_lab.errors import (
     DatasetHashMismatchError,
@@ -34,7 +36,7 @@ from excavation_lab.models.evaluate import (
     evaluate_project,
 )
 from excavation_lab.schemas import pilot_path
-from excavation_lab.storage import create_project
+from excavation_lab.storage import connect, create_project, project_sqlite
 
 _RUNNER = CliRunner()
 _HASH = "ab" * 32
@@ -44,7 +46,7 @@ _SENTINEL = "SENTINEL-VAL-METRICS"
 
 
 def _mapping() -> dict[str, object]:
-    return build_class_mapping()
+    return build_class_mapping(catalog_from_seed())
 
 
 def _compute(
@@ -486,7 +488,8 @@ def test_final_refuses_to_train_when_requirements_are_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workspace = tmp_path / "workspace"
-    create_project("pilot", workspace)
+    list_catalogs(workspace)
+    create_project("pilot", workspace, catalog_id="excavation")
     spies = _spy_train_and_weights(monkeypatch)
     before = pilot_path().read_bytes()
     result = _RUNNER.invoke(
@@ -710,7 +713,7 @@ def _reference_ap50(frame: EvalFrame) -> float:
     from pycocotools.coco import COCO
     from pycocotools.cocoeval import COCOeval
 
-    mapping = build_class_mapping()["by_name"]
+    mapping = build_class_mapping(catalog_from_seed())["by_name"]
     category_id = int(mapping["bucket"]["internal_id"])
     dataset = {
         "images": [{"id": 1, "file_name": frame.image_id, "width": 64, "height": 64}],
@@ -765,9 +768,19 @@ def _reference_ap50(frame: EvalFrame) -> float:
 
 def _install_project(tmp_path: Path, *, manifest: bool = True) -> tuple[Path, Path]:
     workspace = tmp_path / "workspace"
-    record = create_project("pilot", workspace)
+    list_catalogs(workspace)
+    record = create_project("pilot", workspace, catalog_id="excavation")
     project_dir = Path(record["project_dir"])
     model_dir = write_model_bundle(project_dir / "models" / "m1", _spec())
+    with connect(project_sqlite(workspace, "pilot")) as connection:
+        connection.execute(
+            """
+            INSERT INTO model_versions (
+                model_id, project_id, dataset_id, variant, path, created_at
+            ) VALUES ('m1', 'pilot', NULL, 'nano', ?, ?)
+            """,
+            (str(model_dir.resolve()), datetime.now(UTC).isoformat()),
+        )
     dataset = project_dir / "dataset_versions" / "ds1"
     dataset.mkdir()
     if manifest:

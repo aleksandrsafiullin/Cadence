@@ -9,6 +9,7 @@ from pathlib import Path
 from starlette.testclient import TestClient
 
 from excavation_lab import jobs as job_module
+from excavation_lab.datasets.catalog import list_catalogs
 from excavation_lab.storage import create_project, project_directory
 from excavation_lab.ui import training_page
 from excavation_lab.ui.charts import ap50_chart, loss_chart
@@ -48,7 +49,8 @@ def test_spec_fields_are_epoch_loss_and_class_ap50() -> None:
 
 
 def test_progress_chart_is_the_loss_spec(tmp_path: Path) -> None:
-    create_project("pilot", tmp_path)
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
     view = training_page.training_log_view(_HEADER, planned_epochs=50)
     assert training_page.should_draw_chart(view, None) is True
     job_id = "chartjob01"
@@ -67,7 +69,8 @@ def test_progress_chart_is_the_loss_spec(tmp_path: Path) -> None:
 
 
 def test_header_only_progress_has_no_chart(tmp_path: Path) -> None:
-    create_project("pilot", tmp_path)
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
     job_id = "charthead01"
     run_dir = _insert_job(tmp_path, job_id)
     (run_dir / "train_request.json").write_text('{"profile":"smoke"}\n', encoding="utf-8")
@@ -80,7 +83,8 @@ def test_header_only_progress_has_no_chart(tmp_path: Path) -> None:
 
 
 def test_quality_without_scores_omits_the_spec(tmp_path: Path) -> None:
-    create_project("pilot", tmp_path)
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
     _metrics(tmp_path, "run-empty", {"classes": {"bucket": {}}})
     with TestClient(create_app(tmp_path)) as client:
         missing = client.get("/quality")
@@ -103,7 +107,8 @@ def test_quality_without_scores_omits_the_spec(tmp_path: Path) -> None:
 
 
 def test_events_and_analysis_responses_have_no_chart_spec(tmp_path: Path) -> None:
-    create_project("pilot", tmp_path)
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
     job_id = "analyzejob1"
     _insert_job(tmp_path, job_id, kind="analyze")
     with TestClient(create_app(tmp_path)) as client:

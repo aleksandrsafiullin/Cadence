@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 import yaml
 
+from excavation_lab.datasets.catalog import list_catalogs
 from excavation_lab.datasets.zones import (
     ZONE_INVALID_FOR_VIEW,
     ZONE_VALID,
@@ -339,7 +340,8 @@ def test_missing_view_uses_the_unset_track_token() -> None:
 
 def test_video_and_run_store_null_identity(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
-    create_project("pilot", workspace)
+    list_catalogs(workspace)
+    create_project("pilot", workspace, catalog_id="excavation")
     insert_video(workspace, "pilot", "bare")
     bare = get_video(workspace, "pilot", "bare")
     assert bare["site_id"] is None

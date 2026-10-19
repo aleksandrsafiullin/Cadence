@@ -13,6 +13,7 @@ import pytest
 from typer.testing import CliRunner
 
 from excavation_lab.cli import app
+from excavation_lab.datasets.catalog import list_catalogs
 from excavation_lab.errors import LabError
 from excavation_lab.models.adapter import CheckpointOrigin, FrameDetections
 from excavation_lab.schemas import SCHEMA_VERSION
@@ -219,7 +220,8 @@ def test_partial_run_stops_at_analyzed_end(tmp_path: Path) -> None:
 
 def test_csv_export_quotes_formula_notes_and_refuses_events(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
-    create_project("pilot", workspace)
+    list_catalogs(workspace)
+    create_project("pilot", workspace, catalog_id="excavation")
     insert_video(workspace, "pilot", _VIDEO, name="clip")
     with connect(project_sqlite(workspace, "pilot")) as connection:
         connection.execute(

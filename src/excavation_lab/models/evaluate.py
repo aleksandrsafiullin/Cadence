@@ -53,7 +53,11 @@ from excavation_lab.models.bundle import (
     verify_bundle_checksums,
 )
 from excavation_lab.schemas import SCHEMA_VERSION, load_pilot
-from excavation_lab.storage import connect, project_directory, project_sqlite
+from excavation_lab.storage import (
+    project_directory,
+    project_sqlite,
+    recorded_model_directory,
+)
 
 NOT_EVALUATED = "not_evaluated"
 PRECISION_DOMAIN = "evaluated"
@@ -174,7 +178,8 @@ def compute_detection_metrics(
         "hota": NOT_EVALUATED,
         "track_gt_path": _track_gt_note(track_gt_path),
         "resolved_config_hash": _shown_hash(resolved_config_hash),
-        "classes": {name: _public_class(by_class[name]) for name in CLASS_NAMES},
+        "class_names": list(names),
+        "classes": {name: _public_class(by_class[name]) for name in names},
         "targets": _targets(by_class),
     }
 
@@ -253,6 +258,7 @@ def evaluate_project(
                 max_detections=pilot.eval.max_detections,
                 final=final,
                 resolved_config_hash=config_hash,
+                class_names=list(_mapping_names(mapping)),
             )
             _write_json(_run_metrics_path(project_dir, eval_id), report)
             raise TestNotLabeledError(report)
@@ -306,7 +312,16 @@ def format_evaluation_summary(report: Mapping[str, Any]) -> str:
     ]
     classes = report.get("classes")
     if isinstance(classes, Mapping):
-        for name in CLASS_NAMES:
+        listed = report.get("class_names")
+        if (
+            isinstance(listed, list)
+            and listed
+            and all(isinstance(item, str) and item for item in listed)
+        ):
+            order = list(dict.fromkeys(listed))
+        else:
+            order = list(CLASS_NAMES)
+        for name in order:
             row = classes.get(name)
             if not isinstance(row, Mapping):
                 continue
@@ -348,7 +363,7 @@ def _metrics_by_class(
     }
     ap = _average_precision(frames, capped, names, max_detections)
     rows: dict[str, dict[str, Any]] = {}
-    for name in CLASS_NAMES:
+    for name in names:
         gt = _gt_for_class(frames, name)
         dets = _dets_for_class(capped, name)
         curve = _pr_curve(gt, dets, iou)
@@ -540,7 +555,7 @@ def _average_precision(
     names: Mapping[str, int],
     max_detections: int,
 ) -> dict[str, tuple[Any, Any]]:
-    empty = {name: (NOT_CALCULATED, NOT_CALCULATED) for name in CLASS_NAMES}
+    empty = {name: (NOT_CALCULATED, NOT_CALCULATED) for name in names}
     if not frames:
         return empty
     images, annotations, detections = _coco_rows(frames, capped, names)
@@ -752,24 +767,56 @@ def _require_box(xyxy: object, image_id: str) -> None:
 
 
 def _mapping_names(mapping: Mapping[str, Any]) -> dict[str, int]:
+    """Ids from the mapping's own name list, not ``CLASS_NAMES``."""
     by_name = mapping.get("by_name") if isinstance(mapping, Mapping) else None
     if isinstance(by_name, (str, bytes)) or not isinstance(by_name, Mapping):
         raise LabError("class_order", "В class_mapping.json нет by_name.")
+    order = _mapping_name_list(mapping, by_name)
     found: dict[str, int] = {}
-    for name in CLASS_NAMES:
+    for index, name in enumerate(order):
         row = by_name.get(name)
         if isinstance(row, (str, bytes)) or not isinstance(row, Mapping):
             raise LabError("class_order", f"В class_mapping.json нет класса «{name}».")
         class_id = row.get("internal_id")
         if isinstance(class_id, bool) or not isinstance(class_id, int):
             raise LabError("class_order", f"У класса «{name}» нет internal id.")
+        if class_id != index:
+            raise LabError(
+                "class_order",
+                f"Имя «{name}» не получает internal id {class_id}.",
+            )
         found[name] = class_id
-    if set(by_name) != set(CLASS_NAMES):
+    extra = [name for name in by_name if name not in found]
+    if extra:
         raise LabError(
             "class_order",
-            "class_mapping.json должен содержать ровно четыре класса.",
+            f"В class_mapping.json неизвестное имя «{extra[0]}».",
         )
     return found
+
+
+def _mapping_name_list(mapping: Mapping[str, Any], by_name: Mapping[str, Any]) -> list[str]:
+    listed = mapping.get("class_names")
+    if isinstance(listed, list) and listed:
+        names: list[str] = []
+        for item in listed:
+            if not isinstance(item, str) or not item:
+                raise LabError(
+                    "class_order",
+                    "class_names в class_mapping.json должен быть списком имён.",
+                )
+            names.append(item)
+        return names
+    pairs: list[tuple[int, str]] = []
+    for name, row in by_name.items():
+        if not isinstance(name, str) or isinstance(row, (str, bytes)) or not isinstance(row, Mapping):
+            raise LabError("class_order", "class_mapping.json содержит строку класса без имени.")
+        class_id = row.get("internal_id")
+        if isinstance(class_id, bool) or not isinstance(class_id, int):
+            raise LabError("class_order", f"У класса «{name}» нет internal id.")
+        pairs.append((class_id, name))
+    pairs.sort(key=lambda item: item[0])
+    return [name for _, name in pairs]
 
 
 def _public_class(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -784,20 +831,29 @@ def _pool_visibility(rows: Mapping[str, Mapping[str, Any]]) -> tuple[int, int, i
     return clear_hit, clear_gt, partial_hit, partial_gt
 
 
+def _class_metric(rows: Mapping[str, Mapping[str, Any]], name: str, key: str) -> Any:
+    row = rows.get(name)
+    if not isinstance(row, Mapping) or key not in row:
+        return NOT_CALCULATED
+    return row[key]
+
+
 def _targets(rows: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
-    truck = rows["haul_truck"]
-    bucket = rows["bucket"]
+    truck_precision = _class_metric(rows, "haul_truck", "precision")
+    truck_recall = _class_metric(rows, "haul_truck", "recall")
+    bucket_precision = _class_metric(rows, "bucket", "precision")
+    bucket_recall = _class_metric(rows, "bucket", "recall")
     return {
         "haul_truck": {
-            "precision": _target_row(truck["precision"], _TRUCK_TARGET),
-            "recall": _target_row(truck["recall"], _TRUCK_TARGET),
+            "precision": _target_row(truck_precision, _TRUCK_TARGET),
+            "recall": _target_row(truck_recall, _TRUCK_TARGET),
         },
         "bucket": {
-            "precision": _target_row(bucket["precision"], _BUCKET_TARGET),
+            "precision": _target_row(bucket_precision, _BUCKET_TARGET),
             "recall": _target_row(
-                bucket["recall"],
+                bucket_recall,
                 _BUCKET_TARGET,
-                gate=bucket["precision"],
+                gate=bucket_precision,
                 gate_at=_BUCKET_TARGET,
             ),
         },
@@ -871,6 +927,7 @@ def _unlabeled_test_report(
     max_detections: int,
     final: bool,
     resolved_config_hash: str | None,
+    class_names: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     blank = {
         "ap50": NOT_CALCULATED,
@@ -882,6 +939,7 @@ def _unlabeled_test_report(
         "gt_count": NOT_CALCULATED,
         "pr_curve": [],
     }
+    shown = list(class_names) if class_names else list(CLASS_NAMES)
     return {
         "schema_version": SCHEMA_VERSION,
         "eval_id": eval_id,
@@ -907,7 +965,8 @@ def _unlabeled_test_report(
         "hota": NOT_EVALUATED,
         "track_gt_path": None,
         "resolved_config_hash": _shown_hash(resolved_config_hash),
-        "classes": {name: dict(blank) for name in CLASS_NAMES},
+        "class_names": shown,
+        "classes": {name: dict(blank) for name in shown},
         "targets": {
             "haul_truck": {
                 "precision": _target_row(NOT_CALCULATED, _TRUCK_TARGET),
@@ -971,10 +1030,7 @@ def _model_directory(
         return _missing_model(final)
     if "/" in model_id or "\\" in model_id:
         return _missing_model(final)
-    candidate = project_directory(workspace, project_id) / "models" / model_id
-    if candidate.is_dir() and not candidate.is_symlink():
-        return candidate
-    recorded = _recorded_model_path(workspace, project_id, model_id)
+    recorded = recorded_model_directory(workspace, project_id, model_id)
     if recorded is not None and recorded.is_dir() and not recorded.is_symlink():
         return recorded
     return _missing_model(final)
@@ -991,21 +1047,6 @@ def _missing_model(final: bool) -> Path:
         "model_not_found",
         "Каталог модели не найден. Базовая COCO-модель не подставляется.",
     )
-
-
-def _recorded_model_path(workspace: Path, project_id: str, model_id: str) -> Path | None:
-    db_path = project_sqlite(workspace, project_id)
-    with connect(db_path) as connection:
-        row = connection.execute(
-            """
-            SELECT path FROM model_versions
-            WHERE project_id = ? AND model_id = ?
-            """,
-            (project_id, model_id),
-        ).fetchone()
-    if row is None or not isinstance(row["path"], str):
-        return None
-    return Path(row["path"])
 
 
 def _dataset_dir(model_dir: Path, project_dir: Path, *, final: bool) -> tuple[Path, str]:

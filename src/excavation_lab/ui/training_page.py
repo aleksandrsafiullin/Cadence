@@ -294,6 +294,28 @@ def format_error(code: str | None, message: str) -> str:
     return message
 
 
+def missing_snapshot_message(
+    workspace: Path,
+    project_id: str,
+    text: ui_copy.Catalog | None = None,
+) -> str:
+    """Why training cannot start before a snapshot exists.
+
+    The sentence is the data-page gate reason when that gate is closed, so
+    the two pages name the same missing part. An open gate with no snapshot
+    yet does not claim that reviewed frames are missing.
+    """
+    from excavation_lab.ui.data_page import snapshot_gate
+
+    catalog = _resolved(text)
+    gate = snapshot_gate(workspace, project_id, catalog)
+    if gate.enabled:
+        return catalog.snapshot_not_built
+    if gate.reason:
+        return gate.reason
+    return catalog.dataset_not_ready
+
+
 def format_epoch(epoch: int | None, text: ui_copy.Catalog | None = None) -> str:
     """No catalog argument stays Russian."""
     catalog = _resolved(text)
@@ -473,11 +495,11 @@ def _bundle_dir(
         return None
     if not job_id.isalnum():
         return None
+    model_id = f"{profile}-{job_id}"
     try:
-        root = storage.project_directory(workspace, project_id)
+        return storage.recorded_model_directory(workspace, project_id, model_id)
     except LabError:
         return None
-    return root / "models" / f"{profile}-{job_id}"
 
 
 def _planned_from_request(request: Mapping[str, object] | None, profile: object) -> int | None:

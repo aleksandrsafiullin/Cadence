@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -15,14 +17,10 @@ from typer.testing import CliRunner
 
 from excavation_lab import jobs, storage
 from excavation_lab.cli import app
-from excavation_lab.datasets.episodes import EpisodeSpec
+from excavation_lab.datasets.blocks import RoleBlock
+from excavation_lab.datasets.catalog import list_catalogs
 from excavation_lab.datasets.labels import LabelRecord
-from excavation_lab.datasets.splits import (
-    freeze_split,
-    propose_split,
-    require_frozen,
-    write_proposal,
-)
+from excavation_lab.datasets.splits import freeze_split, require_frozen, write_blocks
 from excavation_lab.models import train as train_mod
 from excavation_lab.models.train import OVERFIT_MAX_FRAMES, OVERFIT_OUTPUT_NAME
 from excavation_lab.models.train_config import (
@@ -85,23 +83,19 @@ def _snapshot(root: Path) -> dict[str, bytes]:
 
 def _freeze(workspace: Path) -> None:
     storage.insert_video(workspace, _PROJECT, _VIDEO, name="pilot")
-    proposal = propose_split(
+    manifest = write_blocks(
+        workspace,
+        _PROJECT,
         _VIDEO,
         [
-            EpisodeSpec("train-ep", _VIDEO, "g-train", 0, 600, "погрузка"),
-            EpisodeSpec("val-ep", _VIDEO, "g-val", 620, 820, "погрузка"),
-            EpisodeSpec("test-ep", _VIDEO, "g-test", 840, 1040, "погрузка"),
+            RoleBlock(start_s=0, end_s=600, role="train"),
+            RoleBlock(start_s=620, end_s=820, role="validation"),
+            RoleBlock(start_s=840, end_s=1040, role="test"),
         ],
     )
-    manifest = write_proposal(workspace, _PROJECT, proposal)
     freeze_split(workspace, _PROJECT, manifest)
     frozen = require_frozen(workspace, _PROJECT, _VIDEO)
-    assigned = {episode.episode_id: episode.split.value for episode in frozen.episodes}
-    assert assigned == {
-        "train-ep": "train",
-        "val-ep": "validation",
-        "test-ep": "test",
-    }
+    assert [block.role for block in frozen.blocks] == ["train", "validation", "test"]
 
 
 def _record(index: int, review: str) -> LabelRecord:
@@ -135,7 +129,8 @@ def _build(
     duplicate_first: bool = False,
 ) -> _Built:
     workspace = tmp_path / "workspace"
-    storage.create_project(_PROJECT, workspace)
+    list_catalogs(workspace)
+    storage.create_project(_PROJECT, workspace, catalog_id="excavation")
     _freeze(workspace)
     dataset = workspace / "projects" / _PROJECT / "dataset_versions" / _DATASET_ID
     batch_images = workspace / "projects" / _PROJECT / "annotation_batches" / "vid__train" / "images"
@@ -349,14 +344,50 @@ def _cancel_active(workspace: Path) -> None:
             jobs.request_cancel(workspace, _PROJECT, record.job_id, kill_after_s=0.5)
 
 
+_RUNNING_CAP_S = 15.0
+_CALL_CAP_S = 10.0
+
+
+def _progress(run_dir: Path) -> dict[str, object] | None:
+    path = run_dir / jobs.PROGRESS_FILENAME
+    if not path.is_file():
+        return None
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(loaded, dict):
+        return None
+    return loaded
+
+
+def _abort_if_failed(run_dir: Path) -> None:
+    progress = _progress(run_dir)
+    if progress is not None and progress.get("status") == JobStatus.failed.value:
+        raise AssertionError(f"job failed\n{_logs(run_dir)}\n{progress.get('error')}")
+
+
+def _wait_running(run_dir: Path) -> None:
+    deadline = time.monotonic() + _RUNNING_CAP_S
+    while time.monotonic() < deadline:
+        _abort_if_failed(run_dir)
+        progress = _progress(run_dir)
+        if progress is not None and progress.get("status") == JobStatus.running.value:
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"progress did not reach running\n{_logs(run_dir)}")
+
+
 def _wait_calls(run_dir: Path) -> list[dict[str, object]]:
+    _wait_running(run_dir)
     path = run_dir / "trainer_calls.json"
-    deadline = time.monotonic() + 45
+    deadline = time.monotonic() + _CALL_CAP_S
     while time.monotonic() < deadline:
         if path.is_file():
             loaded = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(loaded, list) and loaded:
                 return loaded
+        _abort_if_failed(run_dir)
         time.sleep(0.02)
     raise AssertionError(f"trainer double wrote no call\n{_logs(run_dir)}")
 
@@ -594,6 +625,26 @@ def test_overfit_refuses_to_invent_frames_below_20(tmp_path: Path) -> None:
     assert list(built.workspace.rglob("*.pth")) == []
     runs = built.workspace / "projects" / _PROJECT / "runs"
     assert not runs.exists() or list(runs.iterdir()) == []
+
+
+def test_train_import_does_not_load_torch() -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys\n"
+                "import excavation_lab.models.class_head\n"
+                "import excavation_lab.models.supervision\n"
+                "import excavation_lab.models.train\n"
+                "assert 'torch' not in sys.modules\n"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_overfit_second_job_is_rejected(

@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from excavation_lab import schemas
@@ -15,6 +16,7 @@ from excavation_lab.errors import LabError
 def test_labels_list_four_classes() -> None:
     labels = schemas.load_labels()
     dumped = labels.model_dump()
+    phrases = _instruction_box_phrases()
     assert dumped["schema_version"] == schemas.SCHEMA_VERSION == 1
     assert [(item.id, item.name.value, item.title) for item in labels.classes] == [
         (0, "excavator_body", "Экскаватор: корпус"),
@@ -22,6 +24,8 @@ def test_labels_list_four_classes() -> None:
         (2, "haul_truck", "Самосвал"),
         (3, "truck_bed", "Кузов самосвала"),
     ]
+    assert [item.box for item in labels.classes] == list(phrases.values())
+    assert [item["box"] for item in dumped["classes"]] == list(phrases.values())
     assert dumped["classes"][0]["name"] == "excavator_body"
     assert [item.value for item in labels.visibility] == [
         "clear",
@@ -41,7 +45,9 @@ def test_labels_list_four_classes() -> None:
 
 def test_unknown_detection_class_is_rejected() -> None:
     raw = schemas.read_yaml_mapping(schemas.labels_path())
-    raw["classes"].append({"id": 1, "name": "dump", "title": "Разгрузка"})
+    raw["classes"].append(
+        {"id": 1, "name": "dump", "title": "Разгрузка", "box": "Не класс детекции."}
+    )
     with pytest.raises(ValidationError, match="dump"):
         schemas.LabelsConfig.model_validate(raw)
 
@@ -53,7 +59,12 @@ def test_unknown_detection_class_is_rejected() -> None:
 def test_duplicate_class_ids_are_rejected() -> None:
     raw = schemas.read_yaml_mapping(schemas.labels_path())
     raw["classes"].append(
-        {"id": 0, "name": "excavator_body", "title": "Экскаватор: корпус"}
+        {
+            "id": 0,
+            "name": "excavator_body",
+            "title": "Экскаватор: корпус",
+            "box": raw["classes"][0]["box"],
+        }
     )
     with pytest.raises(ValidationError, match="duplicate class id"):
         schemas.LabelsConfig.model_validate(raw)
@@ -316,6 +327,251 @@ def test_schema_and_configs_omit_mass_throughput() -> None:
         for word in banned:
             assert word not in text
         assert re.search(r"\btons\b", text) is None
+
+
+def test_catalog_accepts_one_through_sixteen_classes() -> None:
+    one = schemas.CatalogConfig.model_validate(
+        _catalog_document([_class_row(0, "shovel", title="Лопата", box="Видимая лопата.")])
+    )
+    assert type(one) is schemas.CatalogConfig
+    assert [(item.id, item.name) for item in one.classes] == [(0, "shovel")]
+    high_id = schemas.CatalogConfig.model_validate(
+        _catalog_document([_class_row(17, "shovel", title="Лопата", box="Видимая лопата.")])
+    )
+    assert high_id.classes[0].id == 17
+
+    gapped = schemas.CatalogConfig.model_validate(
+        _catalog_document(
+            [
+                _class_row(4, "shovel", title="Лопата", box="Видимая лопата."),
+                _class_row(0, "dozer", title="Бульдозер", box="Видимый отвал."),
+            ]
+        )
+    )
+    assert [(item.id, item.name) for item in gapped.classes] == [
+        (4, "shovel"),
+        (0, "dozer"),
+    ]
+
+    limit = schemas.CATALOG_CLASS_LIMIT
+    sixteen = [
+        _class_row(index, f"c{index}", title=f"Класс {index}", box=f"Рамка {index}.")
+        for index in range(limit)
+    ]
+    full = schemas.CatalogConfig.model_validate(_catalog_document(sixteen))
+    assert [(item.id, item.name) for item in full.classes] == [
+        (index, f"c{index}") for index in range(limit)
+    ]
+
+    seventeen = [
+        _class_row(index, f"c{index}", title=f"Класс {index}", box=f"Рамка {index}.")
+        for index in range(limit + 1)
+    ]
+    with pytest.raises(ValidationError, match=f"at most {limit}"):
+        schemas.CatalogConfig.model_validate(_catalog_document(seventeen))
+    with pytest.raises(ValidationError, match="at least 1 class"):
+        schemas.CatalogConfig.model_validate(_catalog_document([]))
+    with pytest.raises(ValidationError, match="greater than or equal to 0"):
+        schemas.CatalogConfig.model_validate(
+            _catalog_document([_class_row(-1, "shovel", title="Лопата", box="Видимая лопата.")])
+        )
+
+
+def test_catalog_rejects_duplicate_id_or_name() -> None:
+    shovel = _class_row(0, "shovel", title="Лопата", box="Видимая лопата.")
+    same_id = _class_row(0, "dozer", title="Бульдозер", box="Видимый отвал.")
+    with pytest.raises(ValidationError, match="duplicate class id"):
+        schemas.CatalogConfig.model_validate(_catalog_document([shovel, same_id]))
+
+    same_name = _class_row(1, "shovel", title="Другая лопата", box="Другая рамка.")
+    with pytest.raises(ValidationError, match="duplicate class name"):
+        schemas.CatalogConfig.model_validate(_catalog_document([shovel, same_name]))
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "",
+        " ",
+        "ковш",
+        "haul truck",
+        " shovel",
+        "shovel ",
+        "a" + ("b" * 64),
+        "1shovel",
+        "Shovel",
+    ],
+)
+def test_catalog_rejects_a_name_that_is_not_an_ascii_token(name: str) -> None:
+    raw = _catalog_document([_class_row(0, name, title="Лопата", box="Видимая лопата.")])
+    with pytest.raises(ValidationError, match="ASCII token"):
+        schemas.CatalogConfig.model_validate(raw)
+
+
+def test_catalog_keeps_a_64_character_ascii_token() -> None:
+    token = "a" + ("b" * 63)
+    catalog = schemas.CatalogConfig.model_validate(
+        _catalog_document([_class_row(0, token, title="Длинное", box="Рамка.")])
+    )
+    assert catalog.classes[0].name == token
+    assert len(token) == 64
+
+
+def test_catalog_stores_title_and_box_as_given() -> None:
+    source = Path(schemas.__file__).read_text(encoding="utf-8")
+    assert "class_box_lines" not in source
+    assert "excavation_lab.ui" not in source
+    title = "Лопата"
+    box = "Видимая металлическая лопата."
+    catalog = schemas.CatalogConfig.model_validate(
+        _catalog_document([_class_row(0, "shovel", title=title, box=box)])
+    )
+    assert catalog.classes[0].title == title
+    assert catalog.classes[0].box == box
+    dumped = catalog.model_dump()
+    assert dumped["classes"][0]["title"] == title
+    assert dumped["classes"][0]["box"] == box
+    for field in ("title", "box"):
+        blank = _class_row(0, "shovel", title=title, box=box)
+        blank[field] = ""
+        with pytest.raises(ValidationError):
+            schemas.CatalogConfig.model_validate(_catalog_document([blank]))
+        spaces = _class_row(0, "shovel", title=title, box=box)
+        spaces[field] = "   "
+        with pytest.raises(ValidationError):
+            schemas.CatalogConfig.model_validate(_catalog_document([spaces]))
+        missing = _class_row(0, "shovel", title=title, box=box)
+        del missing[field]
+        with pytest.raises(ValidationError):
+            schemas.CatalogConfig.model_validate(_catalog_document([missing]))
+
+
+def test_catalog_rejects_a_changed_label_vocabulary() -> None:
+    row = [_class_row(0, "shovel", title="Лопата", box="Видимая лопата.")]
+    raw = _catalog_document(row)
+    raw["visibility"] = ["clear", "unlabelable"]
+    with pytest.raises(ValidationError, match="visibility must be clear, partial, unlabelable"):
+        schemas.CatalogConfig.model_validate(raw)
+
+    raw = _catalog_document(row)
+    raw["visibility"] = ["clear", "partial", "hidden"]
+    with pytest.raises(ValidationError, match="hidden"):
+        schemas.CatalogConfig.model_validate(raw)
+
+    raw = _catalog_document(row)
+    raw["review_status"] = ["unreviewed", "reviewed"]
+    with pytest.raises(ValidationError, match="review_status must be unreviewed, reviewed, excluded"):
+        schemas.CatalogConfig.model_validate(raw)
+
+    raw = _catalog_document(row)
+    raw["review_status"] = ["unreviewed", "reviewed", "skipped"]
+    with pytest.raises(ValidationError, match="skipped"):
+        schemas.CatalogConfig.model_validate(raw)
+
+    raw = _catalog_document(row)
+    raw["attributes"] = [
+        "truncated",
+        "instance_local_id",
+        "annotator",
+        "reviewed_at",
+        "comment",
+    ]
+    with pytest.raises(ValidationError, match="label attributes"):
+        schemas.CatalogConfig.model_validate(raw)
+
+    raw = _catalog_document(row)
+    raw["attributes"] = [
+        "truncated",
+        "instance_local_id",
+        "annotator",
+        "reviewed_at",
+    ]
+    with pytest.raises(ValidationError, match="label attributes"):
+        schemas.CatalogConfig.model_validate(raw)
+
+
+def test_detection_class_name_is_only_the_four_excavation_names() -> None:
+    assert [item.value for item in schemas.DetectionClassName] == [
+        "excavator_body",
+        "bucket",
+        "haul_truck",
+        "truck_bed",
+    ]
+    assert schemas.LabelClass.__annotations__["name"] == "DetectionClassName"
+    assert schemas.CatalogClass.__annotations__["name"] == "str"
+    assert schemas.AnnotationBox.__annotations__["class_name"] == "str"
+    shovel = schemas.AnnotationBox(
+        class_name="shovel",
+        class_id=4,
+        visibility=schemas.Visibility.clear,
+        x1=1,
+        y1=1,
+        x2=3,
+        y2=4,
+    )
+    assert shovel.class_name == "shovel"
+    assert shovel.class_id == 4
+    assert schemas.Detection.__annotations__["class_name"] == "DetectionClassName"
+    assert schemas.TrackState.__annotations__["class_name"] == "DetectionClassName"
+    with pytest.raises(ValidationError, match="shovel"):
+        schemas.Detection.model_validate(_detection_payload(class_name="shovel"))
+
+
+def test_load_labels_reads_the_seed_not_a_project_catalog(tmp_path: Path) -> None:
+    loaded = schemas.load_labels()
+    assert type(loaded) is schemas.LabelsConfig
+    seed = schemas.CatalogConfig.model_validate(
+        schemas.read_yaml_mapping(schemas.labels_path())
+    )
+    assert [item.name for item in seed.classes] == [
+        item.name.value for item in loaded.classes
+    ]
+    raw = _catalog_document([_class_row(0, "shovel", title="Лопата", box="Видимая лопата.")])
+    path = tmp_path / "catalog.yaml"
+    path.write_text(
+        yaml.safe_dump(raw, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValidationError, match="shovel"):
+        schemas.load_labels(path)
+    catalog = schemas.CatalogConfig.model_validate(
+        schemas.read_yaml_mapping(path)
+    )
+    assert catalog.classes[0].name == "shovel"
+    assert catalog.classes[0].title == "Лопата"
+
+
+def _instruction_box_phrases() -> dict[str, str]:
+    path = schemas.repo_root() / "templates" / "annotation_instructions.md"
+    phrases: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) != 4:
+            continue
+        name = cells[1].strip("`")
+        if re.fullmatch(r"[a-z][a-z0-9_]+", name) is None:
+            continue
+        phrases[name] = cells[3]
+    assert list(phrases) == ["excavator_body", "bucket", "haul_truck", "truck_bed"]
+    return phrases
+
+
+def _class_row(
+    class_id: int,
+    name: str,
+    *,
+    title: str = "Подпись",
+    box: str = "Видимая часть.",
+) -> dict[str, object]:
+    return {"id": class_id, "name": name, "title": title, "box": box}
+
+
+def _catalog_document(classes: list[dict[str, object]]) -> dict[str, object]:
+    raw: dict[str, object] = dict(schemas.read_yaml_mapping(schemas.labels_path()))
+    raw["classes"] = classes
+    return raw
 
 
 def _detection_payload(**overrides: object) -> dict[str, object]:

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from excavation_lab import storage
+from excavation_lab.datasets.catalog import catalog_from_seed, list_catalogs
 from excavation_lab.datasets.coco_import import build_class_mapping
 from excavation_lab.datasets.splits import SAME_SCENE_MESSAGE
 from excavation_lab.errors import LabError
@@ -103,7 +104,7 @@ def _assert_english_keys(node: object) -> None:
 
 
 def test_fake_weight_blob_checks_checksum_and_class_order(tmp_path: Path) -> None:
-    mapping = build_class_mapping()
+    mapping = build_class_mapping(catalog_from_seed())
     mapping["class_names"] = list(reversed(CLASS_NAMES))
     bundle = _write(tmp_path, "m1", class_mapping=mapping)
     for name in (*BUNDLE_FILENAMES, "checksums.json"):
@@ -253,7 +254,7 @@ def test_resume_file_is_copied_only_from_bytes(tmp_path: Path) -> None:
 
 
 def test_swapped_class_ids_are_rejected(tmp_path: Path) -> None:
-    mapping = build_class_mapping()
+    mapping = build_class_mapping(catalog_from_seed())
     mapping["by_name"]["bucket"]["internal_id"] = 0
     mapping["by_name"]["excavator_body"]["internal_id"] = 1
     with pytest.raises(LabError) as caught:
@@ -352,9 +353,10 @@ def test_model_card_template_covers_the_required_sections() -> None:
         assert needle in template
 
 
-def test_publish_writes_the_project_bundle_and_skips_pth_as_resume(tmp_path: Path) -> None:
+def test_publish_writes_workspace_weights_and_skips_pth_as_resume(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
-    storage.create_project("pilot", workspace)
+    list_catalogs(workspace)
+    storage.create_project("pilot", workspace, catalog_id="excavation")
     dataset = workspace / "dataset"
     dataset.mkdir()
     (dataset / "split_manifest.json").write_text(
@@ -418,7 +420,9 @@ def test_publish_writes_the_project_bundle_and_skips_pth_as_resume(tmp_path: Pat
         profile="smoke",
         resolved=resolved,
     )
-    assert bundle == workspace / "projects" / "pilot" / "models" / "smoke-abc123"
+    assert bundle == (workspace / "weights" / "smoke-abc123").resolve()
+    assert (bundle / "class_mapping.json").is_file()
+    assert not (workspace / "projects" / "pilot" / "models" / "smoke-abc123").exists()
     assert (bundle / "weights.pth").read_bytes() == b"inference-bytes"
     assert (bundle / "training_checkpoint.ckpt").read_bytes() == b"library-ckpt"
     assert _json(bundle, "model_config.json")["class_names"] == _CLASS_ORDER
@@ -448,7 +452,8 @@ def test_publish_refuses_to_copy_official_coco_weights(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workspace = tmp_path / "workspace"
-    storage.create_project("pilot", workspace)
+    list_catalogs(workspace)
+    storage.create_project("pilot", workspace, catalog_id="excavation")
     official = tmp_path / "cache" / "weights" / "rf-detr-nano.pth"
     official.parent.mkdir(parents=True)
     official.write_bytes(b"coco-baseline")
@@ -469,4 +474,45 @@ def test_publish_refuses_to_copy_official_coco_weights(
             resolved=resolve_train_profile("smoke"),
         )
     assert caught.value.code == "baseline_weights"
+    assert official.read_bytes() == b"coco-baseline"
     assert list((workspace / "projects" / "pilot" / "models").iterdir()) == []
+    assert not (workspace / "weights").exists()
+
+
+def test_synthetic_wiring_card_drops_numeric_map(tmp_path: Path) -> None:
+    from excavation_lab.models.train_config import METRIC_ROLE_SYNTHETIC_WIRING
+    from excavation_lab.ui import copy as ui_copy
+
+    bundle = _write(
+        tmp_path,
+        "wire",
+        validation_metrics={
+            "schema_version": 1,
+            "selection_metric": "val/mAP_50_95",
+            "box_map_50_95": 0.5,
+            "bucket_ap": 0.25,
+            "selection_unstable": True,
+            "validation_images": 1,
+            "synthetic": True,
+            "metric_role": METRIC_ROLE_SYNTHETIC_WIRING,
+        },
+    )
+    card = _card(bundle)
+    russian = ui_copy.catalog("ru")
+    assert russian.synthetic_card_use in card
+    assert russian.synthetic_card_role in card
+    assert NOT_CALCULATED in card
+    assert "0.5" not in card
+    assert "0.25" not in card
+    assert "Дообученный детектор" not in card
+    config = _json(bundle, "model_config.json")
+    assert config["origin"] == "custom"
+    assert config["synthetic"] is True
+    assert config["metric_role"] == METRIC_ROLE_SYNTHETIC_WIRING
+    stored = _json(bundle, "validation_metrics.json")
+    assert stored["box_map_50_95"] is None
+    assert stored["bucket_ap"] is None
+    assert stored["synthetic"] is True
+    plain = _json(_write(tmp_path, "measured"), "model_config.json")
+    assert "synthetic" not in plain
+    assert ui_copy.catalog("en").synthetic_card_use != russian.synthetic_card_use

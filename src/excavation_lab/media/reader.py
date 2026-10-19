@@ -35,6 +35,7 @@ from excavation_lab.errors import (
     DuplicateFrameError,
     MediaNotFoundError,
     TimebaseError,
+    VfrSamplingUnsupportedError,
 )
 from excavation_lab.media.timebase import (
     TimeBase,
@@ -50,6 +51,9 @@ from excavation_lab.media.timebase import (
 from excavation_lab.schemas import DecodeStatus
 
 _STOP = object()
+# B-frames leave the demuxer out of presentation order. After this many
+# consecutive packets past ``end_s`` no earlier picture is still pending.
+_REORDER_MARGIN = 64
 _MISSING_PTS = (
     "У кадра нет PTS. Время по номеру кадра включается только после "
     "проверки постоянной частоты."
@@ -111,6 +115,23 @@ class ReadFrame:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class PtsTick:
+    """One source frame located by its demuxed packet PTS. No pixels were decoded.
+
+    ``source_frame_index`` follows the same rule as a decoded frame on a
+    constant-step stream: ``(pts - start_pts) // duration``. ``span_end_s`` is
+    the exclusive end of the frame's display interval on the source clock.
+    """
+
+    video_id: str
+    source_frame_index: int
+    source_pts: int
+    time_base: str
+    source_time_s: float
+    span_end_s: float
+
+
 class FrameReader:
     """Read ``path`` from disk. ``iterate(start_s, end_s)`` is half-open."""
 
@@ -163,6 +184,107 @@ class FrameReader:
         finally:
             if container is not None:
                 container.close()
+
+    def iterate_pts(
+        self,
+        start_s: float = 0.0,
+        end_s: float | None = None,
+    ) -> Iterator[PtsTick]:
+        """Yield ticks with ``start_s <= source_time_s < end_s`` from packet PTS only.
+
+        Nothing is decoded. The pass is accepted only while every demuxed
+        packet carries the same positive duration and sits on that grid, so
+        the index equals what :meth:`iterate` would assign. Anything else
+        raises :class:`VfrSamplingUnsupportedError`; the caller decodes
+        instead. Time is never ``frame_index / fps``.
+        """
+        require_half_open_interval(start_s, end_s)
+        if self.time_mode is not TimeMode.pts:
+            raise VfrSamplingUnsupportedError("Режим времени не pts.")
+        container = _open_container(self.path)
+        try:
+            stream = _video_stream(container, self.path)
+            time_base = _stream_time_base(stream)
+            start_pts = _start_pts(stream)
+            start_offset_s = source_time_s(start_pts, time_base, 0.0)
+            _seek_to(container, stream, start_s, time_base)
+            ticks = _demux_ticks(
+                container,
+                stream,
+                video_id=self.video_id,
+                time_base=time_base,
+                start_pts=start_pts,
+                start_offset_s=start_offset_s,
+                start_s=start_s,
+                end_s=end_s,
+            )
+        finally:
+            container.close()
+        yield from ticks
+
+
+def _demux_ticks(
+    container: av.container.InputContainer,
+    stream: av.VideoStream,
+    *,
+    video_id: str,
+    time_base: TimeBase,
+    start_pts: int,
+    start_offset_s: float,
+    start_s: float,
+    end_s: float | None,
+) -> list[PtsTick]:
+    period: int | None = None
+    found: dict[int, PtsTick] = {}
+    past_end = 0
+    for packet in container.demux(stream):
+        pts = packet.pts
+        if pts is None:
+            if packet.size == 0:
+                continue  # demuxer flush packet, not a picture
+            raise VfrSamplingUnsupportedError("У пакета нет PTS.")
+        if isinstance(pts, bool) or not isinstance(pts, int):
+            raise VfrSamplingUnsupportedError("У пакета нет PTS.")
+        duration = packet.duration
+        if isinstance(duration, bool) or not isinstance(duration, int) or duration <= 0:
+            raise VfrSamplingUnsupportedError("У пакета нет длительности.")
+        if period is None:
+            period = duration
+        elif duration != period:
+            raise VfrSamplingUnsupportedError(
+                f"Длительность пакета {duration} отличается от {period} тиков."
+            )
+        if pts < start_pts:
+            raise VfrSamplingUnsupportedError("PTS пакета раньше начала потока.")
+        delta = pts - start_pts
+        if delta % period:
+            raise VfrSamplingUnsupportedError("PTS пакета не кратен шагу кадра.")
+        timestamp = source_time_s(pts, time_base, start_offset_s, start_pts=start_pts)
+        if end_s is not None and (timestamp > end_s or _at_end(timestamp, end_s)):
+            past_end += 1
+            if past_end > _REORDER_MARGIN:
+                break
+            continue
+        if not in_half_open(timestamp, start_s, end_s):
+            continue
+        past_end = 0
+        index = delta // period
+        if index in found:
+            raise DuplicateFrameError(index)
+        found[index] = PtsTick(
+            video_id=video_id,
+            source_frame_index=index,
+            source_pts=pts,
+            time_base=time_base.text,
+            source_time_s=timestamp,
+            span_end_s=source_time_s(
+                pts + period,
+                time_base,
+                start_offset_s,
+                start_pts=start_pts,
+            ),
+        )
+    return [found[index] for index in sorted(found)]
 
 
 def decode_packet(packet: av.Packet) -> Iterator[av.VideoFrame]:

@@ -1,14 +1,13 @@
-"""Annotation rules for the four detection classes.
+"""Annotation rules for one catalog.
 
 A reviewed frame with zero boxes is ``reviewed_empty`` (a negative).
 An unreviewed frame is stored and is not a negative.
 An excluded frame is stored and is not trainable.
 ``visibility=unlabelable`` forces ``review_status=excluded``.
 
-Class ids come from ``configs/labels.yaml`` by name. Id 0 is
-``excavator_body``, not background. A note never adds a box.
-``iscrowd`` other than 0 is refused and is not rewritten as ``partial``.
-Nested ``truck_bed`` inside ``haul_truck`` is kept as two boxes.
+Class ids come from the catalog passed into ``validate_frame``. Id 0 is
+a class, not background. A note never adds a box. ``iscrowd`` other than
+0 is refused and is not rewritten as ``partial``. Nested boxes are kept.
 """
 
 from __future__ import annotations
@@ -21,16 +20,16 @@ from typing import Any, Self
 
 from pydantic import Field, model_validator
 
-from excavation_lab.errors import UnknownCategoryError, UnsupportedCrowdError
+from excavation_lab.datasets.catalog import StoredCatalog
+from excavation_lab.errors import LabError, UnknownCategoryError, UnsupportedCrowdError
 from excavation_lab.schemas import (
     AnnotatedFrame,
     AnnotationBox,
-    LabelClass,
-    LabelsConfig,
+    CatalogClass,
+    CatalogConfig,
     ReviewStatus,
     StrictModel,
     Visibility,
-    load_labels,
 )
 
 
@@ -44,10 +43,14 @@ class LabelState(StrEnum):
 
 
 class BoxDraft(StrictModel):
-    """One incoming box. ``category_id`` is not the internal class id."""
+    """One incoming box. ``category_id`` is not the internal class id.
+
+    ``class_id``, when set, must already be that catalog's id for the name.
+    """
 
     category_name: str
     category_id: int | None = None
+    class_id: int | None = None
     visibility: Visibility = Visibility.clear
     truncated: bool = False
     instance_local_id: str | None = Field(default=None, min_length=1)
@@ -123,22 +126,20 @@ class LabelRecord(AnnotatedFrame):
 
 def lookup_class(
     category_name: str,
+    catalog: StoredCatalog | CatalogConfig,
     *,
-    labels: LabelsConfig | None = None,
     frame_id: str | None = None,
-) -> LabelClass:
-    """Return the class named ``category_name`` in ``configs/labels.yaml``.
+) -> CatalogClass:
+    """Return the class named ``category_name`` in ``catalog``.
 
-    Matching is exact on the configured name. Id 0 is ``excavator_body``.
-    An unknown name, including ``dump`` or ``"0"``, raises
-    ``UnknownCategoryError`` and is not snapped to a nearby class.
+    Matching is exact. An unknown name, including ``dump`` or ``"0"``,
+    raises ``UnknownCategoryError`` and is not snapped to a nearby class.
     """
-    config = load_labels() if labels is None else labels
     if isinstance(category_name, bool) or not isinstance(category_name, str):
         raise UnknownCategoryError(str(category_name), frame_id)
     name = category_name.strip()
-    for item in config.classes:
-        if item.name.value == name:
+    for item in catalog.classes:
+        if item.name == name:
             return item
     raise UnknownCategoryError(name, frame_id)
 
@@ -152,15 +153,26 @@ def _reject_crowd(iscrowd: object, frame_id: str) -> None:
     raise UnsupportedCrowdError(frame_id, shown)
 
 
-def _accept_box(box: BoxDraft, frame_id: str, labels: LabelsConfig) -> AnnotationBox:
+def _accept_box(
+    box: BoxDraft,
+    frame_id: str,
+    catalog: StoredCatalog | CatalogConfig,
+) -> AnnotationBox:
     """One visible-extent box.
 
-    ``box.category_id`` is not read. A COCO id of 0 does not select
-    ``excavator_body`` and does not mean background.
+    ``box.category_id`` is not read. A COCO id of 0 does not select a class
+    and does not mean background. The stored id is the catalog id for the
+    name. A different ``class_id`` is rejected and the name stays.
     """
     # Crowd is not occlusion. Do not rewrite it as visibility=partial.
     _reject_crowd(box.iscrowd, frame_id)
-    found = lookup_class(box.category_name, labels=labels, frame_id=frame_id)
+    found = lookup_class(box.category_name, catalog, frame_id=frame_id)
+    if box.class_id is not None and box.class_id != found.id:
+        raise LabError(
+            "class_id_mismatch",
+            f"Кадр {frame_id}: класс «{found.name}» хранится с id {found.id}, "
+            f"не {box.class_id}. Имя не подменяется.",
+        )
     return AnnotationBox(
         class_name=found.name,
         class_id=found.id,
@@ -175,17 +187,19 @@ def _accept_box(box: BoxDraft, frame_id: str, labels: LabelsConfig) -> Annotatio
     )
 
 
-def validate_frame(frame: FrameDraft | Mapping[str, Any]) -> LabelRecord:
-    """Accept one frame under the review rules.
+def validate_frame(
+    frame: FrameDraft | Mapping[str, Any],
+    catalog: StoredCatalog | CatalogConfig,
+) -> LabelRecord:
+    """Accept one frame under the review rules and ``catalog``.
 
     The returned record is the stored label. Notes are copied and never
     add a box, including when the note says the bucket is hidden.
-    Every accepted box is kept, including ``truck_bed`` inside ``haul_truck``.
+    Every accepted box is kept. The catalog is an argument.
     """
     draft = frame if isinstance(frame, FrameDraft) else FrameDraft.model_validate(frame)
-    config = load_labels()
     frame_id = f"{draft.video_id}:{draft.source_frame_index}"
-    boxes = [_accept_box(box, frame_id, config) for box in draft.boxes]
+    boxes = [_accept_box(box, frame_id, catalog) for box in draft.boxes]
     return LabelRecord(
         video_id=draft.video_id,
         source_frame_index=draft.source_frame_index,

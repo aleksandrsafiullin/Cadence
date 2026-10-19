@@ -58,6 +58,7 @@ AUGMENTATION_EVAL_KEY = "augmentation_eval"
 AUGMENTATION_TRAIN = "mild"
 AUGMENTATION_EVAL = "deterministic"
 METRIC_ROLE_DIAGNOSTIC_OVERFIT = "diagnostic_overfit"
+METRIC_ROLE_SYNTHETIC_WIRING = "synthetic_wiring"
 # Smoke network fields. Overfit may change epochs and must set diagnostic.
 _SMOKE_NETWORK_KEYS = (
     "variant",

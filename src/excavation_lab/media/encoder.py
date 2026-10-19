@@ -431,6 +431,79 @@ def _encode_cfr(
             container.mux(packet)
 
 
+_BAD_PREVIEW_MAP = "Карта preview не содержит шкалу исходного времени."
+
+
+def read_preview_time_map(path: Path) -> tuple[PreviewMapRow, ...]:
+    """Read ``preview_time_map.csv``.
+
+    Preview time may start at 0. ``source_time_s`` stays on the source clock.
+    A missing file is the caller's error. An unordered map raises
+    ``TimebaseError`` and is not treated as preview 0.
+    """
+    with path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        names = reader.fieldnames
+        if names is None or "preview_time_s" not in names or "source_time_s" not in names:
+            raise TimebaseError(_BAD_PREVIEW_MAP)
+        rows: list[PreviewMapRow] = []
+        previous_preview: float | None = None
+        previous_source: float | None = None
+        for raw in reader:
+            if not raw or all(value is None or value == "" for value in raw.values()):
+                continue
+            preview = _map_seconds(raw.get("preview_time_s"))
+            source = _map_seconds(raw.get("source_time_s"))
+            if previous_preview is not None and previous_source is not None:
+                require_monotonic(previous_preview, preview)
+                require_monotonic(previous_source, source)
+            previous_preview = preview
+            previous_source = source
+            rows.append(
+                PreviewMapRow(
+                    preview_time_s=preview,
+                    source_time_s=source,
+                    source_frame_index=_map_index(raw.get("source_frame_index")),
+                    repeated=_map_flag(raw.get("repeated")),
+                    gap_slate=_map_flag(raw.get("gap_slate")),
+                )
+            )
+    return tuple(rows)
+
+
+def _map_seconds(value: object) -> float:
+    if not isinstance(value, str) or not value.strip():
+        raise TimebaseError(_BAD_PREVIEW_MAP)
+    try:
+        number = float(value)
+    except ValueError as exc:
+        raise TimebaseError(_BAD_PREVIEW_MAP) from exc
+    if not math.isfinite(number):
+        raise TimebaseError(_BAD_PREVIEW_MAP)
+    return number
+
+
+def _map_index(value: object) -> int | None:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or not value.isdigit():
+        raise TimebaseError(_BAD_PREVIEW_MAP)
+    return int(value)
+
+
+def _map_flag(value: object) -> bool:
+    if value is None or value == "":
+        return False
+    if not isinstance(value, str):
+        raise TimebaseError(_BAD_PREVIEW_MAP)
+    token = value.strip().casefold()
+    if token == "true":
+        return True
+    if token == "false":
+        return False
+    raise TimebaseError(_BAD_PREVIEW_MAP)
+
+
 def _write_map(path: Path, rows: Sequence[PreviewMapRow]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:

@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 import pytest
 from starlette.testclient import TestClient
 
+from excavation_lab.datasets.catalog import list_catalogs
 from excavation_lab.errors import PathNotAllowedError
 from excavation_lab.ui import copy as ui_copy
 from excavation_lab.ui import locale as locale_mod
@@ -32,7 +33,7 @@ from excavation_lab.web.app import create_app
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _REPO_LOCALE = REPO_ROOT / "workspace" / "ui" / "locale.txt"
 _REPO_WORKSPACE = REPO_ROOT / "workspace"
-_PAGE_IDS = ("video", "data", "training", "analysis", "quality", "events")
+_PAGE_IDS = ("video", "data", "training", "analysis", "quality", "actions", "events")
 _INVALID = ("stopping", "", "fr", "EN", "RU", "ru\nen")
 _CYRILLIC = re.compile(r"[\u0400-\u04FF]")
 _ALLOWED_CYRILLIC = ("Русский", "класс")
@@ -42,6 +43,7 @@ _ENGLISH_TITLES = (
     "Training",
     "Analysis",
     "Quality",
+    "Actions",
     "Events",
 )
 _ENGLISH_ROUTES = (
@@ -50,6 +52,7 @@ _ENGLISH_ROUTES = (
     ("/training", "Training", "training"),
     ("/analysis", "Analysis", "analysis"),
     ("/quality", "Quality", "quality"),
+    ("/actions", "Actions", "actions"),
     ("/events", "Events", "events"),
 )
 _CATALOG_CALLS: tuple[tuple[str, tuple[object, ...]], ...] = (
@@ -379,7 +382,8 @@ def test_shell_order_and_shared_resolver() -> None:
     assert "PAGE_DESCRIPTIONS" not in template
     app = (REPO_ROOT / "src" / "excavation_lab" / "web" / "app.py").read_text(encoding="utf-8")
     assert "PAGE_DESCRIPTIONS" not in app
-    context = app[app.index("def _context") :]
+    shell = (REPO_ROOT / "src" / "excavation_lab" / "web" / "shell.py").read_text(encoding="utf-8")
+    context = shell[shell.index("def page_shell") :]
     assert context.index("resolve_locale(") < context.index("nav_links")
     nav = Path(navigation.__file__).read_text(encoding="utf-8")
     assert "st.navigation" not in nav
@@ -390,6 +394,7 @@ def test_shell_order_and_shared_resolver() -> None:
         "training",
         "analysis",
         "quality",
+        "actions",
         "events",
     ]
     assert ui_copy.PRODUCT_TITLE == "Cadence"
@@ -632,7 +637,8 @@ def test_english_pages_reject_leftover_cyrillic(tmp_path: Path) -> None:
                     assert value == book.not_calculated, label
         assert tuple(seen_titles) == _ENGLISH_TITLES
         assert leftovers == []
-        create_project("pilot", workspace)
+        list_catalogs(workspace)
+        create_project("pilot", workspace, catalog_id="excavation")
         video = client.get("/")
         assert video.status_code == 200
         assert book.choose_file_button in video.text
@@ -837,7 +843,8 @@ def _finished_run(workspace: Path, stamps: tuple[float, float]) -> str:
     from excavation_lab.media.probe import add_video
     from excavation_lab.storage import create_project, project_directory
 
-    create_project("pilot", workspace)
+    list_catalogs(workspace)
+    create_project("pilot", workspace, catalog_id="excavation")
     clip = workspace / "clip.mp4"
     spec_path = Path(__file__).resolve().parents[1] / "fixtures" / "synthetic.py"
     spec = importlib.util.spec_from_file_location("locale_synthetic_mp4", spec_path)

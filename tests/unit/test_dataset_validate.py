@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 
 from excavation_lab import storage
 from excavation_lab.cli import app
+from excavation_lab.datasets.catalog import catalog_from_seed, list_catalogs
 from excavation_lab.datasets.coco_import import build_class_mapping
 from excavation_lab.datasets.labels import LabelRecord
 from excavation_lab.datasets.validate import validate_dataset
@@ -55,7 +56,7 @@ class _Spec:
 
 
 def _class_id(name: str) -> int:
-    return int(build_class_mapping()["by_name"][name]["coco_category_id"])
+    return int(build_class_mapping(catalog_from_seed())["by_name"][name]["coco_category_id"])
 
 
 def _payload(index: int) -> bytes:
@@ -63,7 +64,7 @@ def _payload(index: int) -> bytes:
 
 
 def _categories() -> list[dict[str, object]]:
-    mapping = build_class_mapping()["by_name"]
+    mapping = build_class_mapping(catalog_from_seed())["by_name"]
     rows = [
         {"id": int(spec["coco_category_id"]), "name": name, "supercategory": "none"}
         for name, spec in mapping.items()
@@ -121,7 +122,8 @@ def _dump(path: Path, document: object) -> None:
 
 def _write_case(tmp_path: Path, specs: list[_Spec]) -> tuple[Path, Path]:
     workspace = tmp_path / "workspace"
-    storage.create_project("pilot", workspace)
+    list_catalogs(workspace)
+    storage.create_project("pilot", workspace, catalog_id="excavation")
     project = workspace / "projects" / "pilot"
     snapshot = project / "dataset_versions" / "dsvalidate"
     batch = project / "annotation_batches" / "vid__train"
@@ -187,7 +189,7 @@ def _write_case(tmp_path: Path, specs: list[_Spec]) -> tuple[Path, Path]:
             },
         )
     dataset_hash = "a" * 64
-    _dump(snapshot / "class_mapping.json", build_class_mapping())
+    _dump(snapshot / "class_mapping.json", build_class_mapping(catalog_from_seed()))
     _dump(snapshot / "split_manifest.json", {"schema_version": 1})
     _dump(
         snapshot / "dataset_manifest.json",
@@ -469,3 +471,5 @@ def test_validate_module_does_not_score_or_copy() -> None:
     assert "streamlit" not in source
     assert "shutil" not in source
     assert "mAP" not in source
+    assert "_REQUIRED_CLASSES" not in source
+    assert "DetectionClassName" not in source

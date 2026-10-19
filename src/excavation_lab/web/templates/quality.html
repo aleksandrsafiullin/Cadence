@@ -110,6 +110,7 @@
     {% endif %}
     <input type="hidden" name="frame_id" value="{{ row.frame_id }}">
     <button type="submit" class="lab-button" name="{{ row.key }}" value="1" title="{{ book.send_train_only }}"{% if not row.enabled %} disabled{% endif %}>{{ book.send_to_labeling }}</button>
+    {% if not row.enabled %}<p class="lab-caption">{{ book.send_train_only }}</p>{% endif %}
   </form>
   {% endfor %}
   {% endif %}

@@ -18,6 +18,7 @@ from typer.testing import CliRunner
 
 from excavation_lab import jobs
 from excavation_lab.cli import app
+from excavation_lab.datasets.catalog import list_catalogs
 from excavation_lab.errors import CheckpointMissingError
 from excavation_lab.media.reader import FrameReader, ReadFrame
 from excavation_lab.media.timebase import TimeMode, in_half_open
@@ -549,7 +550,8 @@ def _project_with_clip(tmp_path: Path, *, seconds: float, fps: int) -> tuple[Pat
     from excavation_lab.media.probe import add_video
 
     workspace = tmp_path / "workspace"
-    create_project("pilot", workspace)
+    list_catalogs(workspace)
+    create_project("pilot", workspace, catalog_id="excavation")
     clip = workspace / "clip.mp4"
     write_synthetic_mp4(clip, seconds, fps)
     added = add_video(workspace, "pilot", clip, video_id="clip")

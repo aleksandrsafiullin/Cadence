@@ -19,6 +19,7 @@ _PAGE_IDS: tuple[str, ...] = (
     "training",
     "analysis",
     "quality",
+    "actions",
     "events",
 )
 _CLASS_IDS: tuple[str, ...] = ("excavator_body", "bucket", "haul_truck", "truck_bed")
@@ -120,6 +121,7 @@ class Catalog:
     page_data: str
     page_training: str
     page_analysis: str
+    page_actions: str
     page_events: str
     project_label: str
     no_project: str
@@ -190,6 +192,7 @@ class Catalog:
     split_hash: str
     proposal_missing: str
     proposal_broken: str
+    proposal_legacy: str
     proposal_heading: str
     frozen_heading: str
     independence_label: str
@@ -201,6 +204,18 @@ class Catalog:
     episode_concurrent: str
     add_episode: str
     episode_added: str
+    default_episode_label: str
+    cut_here: str
+    cut_hint: str
+    concurrent_pass: str
+    remove_cut: str
+    save_episode_label: str
+    episodes_frozen_note: str
+    frame_step_label: str
+    arrow_frame_hint: str
+    nudge_hint: str
+    episodes_saved: str
+    episodes_save_failed: str
     guards_heading: str
     guards_empty: str
     split_heading: str
@@ -224,9 +239,63 @@ class Catalog:
     batch_split: str
     include_predictions: str
     predictions_help: str
+    step_label_title: str
+    step_snapshot_title: str
+    step_episodes_text: str
+    step_split_text: str
+    step_sample_text: str
+    step_label_text: str
+    step_snapshot_text: str
+    step_now: str
+    step_done: str
+    step_wait: str
+    step_wait_episode: str
+    step_wait_frozen: str
+    step_wait_frames: str
+    step_snapshot_open: str
+    step_snapshot_written: str
+    episode_group_help: str
+    episode_label_help: str
+    freeze_once: str
+    split_name_train: str
+    split_name_validation: str
+    split_name_test: str
+    equipment_block_help: str
+    action_block_help: str
+    block_guard_help: str
+    block_guard_gap: str
+    block_unassigned: str
+    block_overlap: str
+    add_block: str
+    save_blocks: str
+    block_start: str
+    block_end: str
+    block_role: str
+    blocks_saved: str
+    blocks_save_failed: str
+    sample_plan_help: str
+    label_class_names: str
+    add_class: str
+    class_added: str
+    add_class_name: str
+    add_class_title: str
+    add_class_box: str
+    class_box_lines: dict[str, str]
+    label_review_rule: str
+    label_zip_back: str
+    export_path_note: str
+    download_batch: str
+    contact_no_boxes: str
     snapshot_dataset: str
     snapshot_locked: str
     snapshot_ready: str
+    snapshot_other: str
+    snapshot_no_train: str
+    snapshot_no_validation: str
+    snapshot_gate_scope: str
+    label_counts_this_video: str
+    label_counts_project: str
+    label_counts_snapshot: str
     review_heading: str
     count_reviewed: str
     count_unreviewed: str
@@ -274,6 +343,7 @@ class Catalog:
     train_start_help: str
     train_cancel_help: str
     dataset_not_ready: str
+    snapshot_not_built: str
     train_log_broken: str
     analysis_empty: str
     analysis_no_video: str
@@ -293,6 +363,9 @@ class Catalog:
     mode_baseline: str
     mode_custom: str
     bundle_label: str
+    bundle_synthetic: str
+    synthetic_card_use: str
+    synthetic_card_role: str
     threshold_new_run: str
     bt_high: str
     bt_activation: str
@@ -371,7 +444,192 @@ class Catalog:
     process_lost: str
     partial_result: str
     events_unavailable_caption: str
+    create_project_heading: str
+    create_project_name: str
+    create_project_button: str
+    catalog_existing: str
+    catalog_new: str
+    catalog_id_label: str
+    catalog_copy_label: str
+    catalog_copy_none: str
+    catalog_none: str
+    catalog_required: str
+    catalog_id_required: str
+    class_row_incomplete: str
+    project_name_required: str
+    add_class_row: str
+    class_name_column: str
+    class_title_column: str
+    class_box_column: str
+    catalog_classes_heading: str
     project_write_failed: str
+    label_page_title: str
+    label_open_app: str
+    label_loading: str
+    label_back_to_data: str
+    label_progress: str
+    label_mark_reviewed: str
+    label_mark_excluded: str
+    label_mark_unreviewed: str
+    label_unreviewed_hint: str
+    label_visibility_clear: str
+    label_visibility_partial: str
+    label_visibility_unlabelable: str
+    label_unlabelable_excludes: str
+    label_truncated: str
+    label_delete_box: str
+    label_prev: str
+    label_next: str
+    label_annotator: str
+    label_saved: str
+    label_save_failed: str
+    label_not_frozen: str
+    label_frame_not_sampled: str
+    label_fit_width_note: str
+    label_save: str
+    label_note: str
+    label_box_note: str
+    label_instance: str
+    label_class: str
+    label_visibility: str
+    label_invalid_json: str
+    label_invalid_review: str
+    label_invalid_visibility: str
+    label_invalid_box: str
+    label_unknown_class: str
+    label_unknown_video: str
+    label_unknown_frame: str
+    label_frame_unassigned: str
+    label_image_missing: str
+    label_annotator_invalid: str
+    label_unsupported_crowd: str
+    label_unsupported_media_type: str
+    label_cross_site: str
+    label_confirm_empty: str
+    label_excluded_hint: str
+    label_filter_status: str
+    label_filter_all: str
+    label_filter_unreviewed: str
+    label_filter_reviewed: str
+    label_filter_excluded: str
+    label_filter_split: str
+    label_filter_all_splits: str
+    label_shortcuts_title: str
+    label_shortcut_class: str
+    label_shortcut_visibility: str
+    label_shortcut_truncated: str
+    label_shortcut_reviewed: str
+    label_shortcut_excluded: str
+    label_shortcut_unreviewed: str
+    label_shortcut_nav: str
+    label_shortcut_delete: str
+    label_shortcut_help: str
+    label_reviewed_at: str
+    label_frame_index: str
+    label_frames_heading: str
+    label_review_group: str
+    label_suggest_button: str
+    label_suggest_model: str
+    label_suggest_accept: str
+    label_suggest_accept_all: str
+    label_suggest_reject_all: str
+    label_not_train_frame: str
+    label_job_running: str
+    label_bundle_missing: str
+    label_suggest_dropped: str
+    action_catalog_heading: str
+    action_name_column: str
+    action_title_column: str
+    action_seed: str
+    action_name_help: str
+    action_add: str
+    action_delete: str
+    action_save: str
+    action_edit_title: str
+    action_set_start: str
+    action_set_end: str
+    action_select: str
+    action_overlap: str
+    action_crosses_block: str
+    action_outside_block: str
+    action_invalid_interval: str
+    action_stale: str
+    action_save_failed: str
+    action_blocks_unfrozen: str
+    action_coverage_missing: str
+    action_coverage_hint: str
+    action_table_start: str
+    action_table_end: str
+    action_table_duration: str
+    action_table_action: str
+    action_table_role: str
+    action_shortcuts: str
+    action_snap_note: str
+    action_reload: str
+    action_draft: str
+    action_no_video: str
+    action_step_catalog: str
+    action_step_labels: str
+    action_step_train: str
+    action_step_results: str
+    action_step_catalog_text: str
+    action_step_labels_text: str
+    action_step_train_wait: str
+    action_step_results_wait: str
+    action_step_need_catalog: str
+    action_step_train_text: str
+    action_step_results_text: str
+    action_runs_heading: str
+    action_no_runs: str
+    action_ready_heading: str
+    action_ready_ok: str
+    action_start: str
+    action_cancel: str
+    action_advanced: str
+    action_epochs: str
+    action_window_s: str
+    action_min_confidence: str
+    action_min_duration: str
+    action_models_heading: str
+    action_no_model: str
+    action_support_train: str
+    action_support_validation: str
+    action_classes_scored: str
+    action_selection_unstable: str
+    action_selection_stable: str
+    action_infer_heading: str
+    action_other_detector: str
+    action_infer_start: str
+    action_inferences_heading: str
+    action_no_inference: str
+    action_select_runs: str
+    action_unknown_share: str
+    action_export_csv: str
+    action_compare_heading: str
+    action_test_hidden: str
+    action_predicted_heading: str
+    action_predicted_empty: str
+    action_evaluate_validation: str
+    action_evaluate_final: str
+    action_final_once: str
+    action_eval_empty: str
+    action_precision: str
+    action_recall: str
+    action_f1: str
+    action_support_frames: str
+    action_support_intervals: str
+    action_accuracy: str
+    action_macro_f1: str
+    action_evaluated_frames: str
+    action_unlabelled_frames: str
+    action_unknown_rate: str
+    action_mean_confidence: str
+    action_progress: str
+    action_no_chart: str
+    action_epoch: str
+    action_run_fps: str
+    job_already_running: str
+    label_suggest_none: str
 
     def __post_init__(self) -> None:
         _require_keys(self.leads, _PAGE_IDS, "leads")
@@ -380,6 +638,7 @@ class Catalog:
         _require_keys(self.error_kind_labels, _ERROR_KIND_KEYS, "error_kind_labels")
         _require_keys(self.metric_labels, _METRIC_KEYS, "metric_labels")
         _require_keys(self.sample_plan_labels, _SAMPLE_PLAN_IDS, "sample_plan_labels")
+        _require_keys(self.class_box_lines, _CLASS_IDS, "class_box_lines")
         if len(self.event_indicator_labels) != _EVENT_INDICATOR_COUNT:
             raise ValueError("event indicators must have 12 labels")
         for page_id, text in self.leads.items():
@@ -400,6 +659,7 @@ class Catalog:
             self.page_training,
             self.page_analysis,
             self.page_quality,
+            self.page_actions,
             self.page_events,
         )
 
@@ -651,6 +911,7 @@ RU = _RussianCatalog(
     page_data="Данные и разметка",
     page_training="Обучение",
     page_analysis="Анализ",
+    page_actions="Действия",
     page_events="События",
     project_label="Проект",
     no_project="нет проекта",
@@ -726,19 +987,32 @@ RU = _RussianCatalog(
     propose_done="Предложение записано. Разбиение ещё не зафиксировано.",
     propose_kept_frozen="Предложение записано. Зафиксированное разбиение не заменяется.",
     split_hash="Хеш разбиения",
-    proposal_missing="Предложения ещё нет.",
-    proposal_broken="Файл предложения разбиения повреждён.",
-    proposal_heading="Предложение",
+    proposal_missing="Блоков ещё нет.",
+    proposal_broken="Файл разбиения повреждён.",
+    proposal_legacy="На диске осталось разбиение по заездам. Оно не является блоками и не стёрто. Поставьте блоки обучения, проверки и итоговой оценки.",
+    proposal_heading="Блоки",
     frozen_heading="Зафиксированное разбиение",
     independence_label="Независимость",
     episodes_heading="Эпизоды",
-    episodes_empty="Эпизодов нет. Добавьте интервал, затем предложите разбиение.",
+    episodes_empty="Эпизодов нет. Поставьте разрез на шкале, затем предложите разбиение.",
     episode_id="Идентификатор эпизода",
-    episode_group="split_group_id",
+    episode_group="Группа заезда",
     episode_label="Метка",
     episode_concurrent="Одновременные заезды",
     add_episode="Добавить эпизод",
     episode_added="Эпизод добавлен.",
+    default_episode_label="заезд",
+    cut_here="Разрезать",
+    cut_hint="Клавиша S ставит разрез в текущей точке.",
+    concurrent_pass="Одновременный заезд",
+    remove_cut="Убрать разрез",
+    save_episode_label="Сохранить метку",
+    episodes_frozen_note="Разбиение уже зафиксировано.",
+    frame_step_label="Шаг кадра",
+    arrow_frame_hint="Стрелки сдвигают выбранную границу на один кадр.",
+    nudge_hint="Shift и стрелки сдвигают выбранную границу на 1 с.",
+    episodes_saved="Эпизоды записаны.",
+    episodes_save_failed="Не удалось записать эпизоды.",
     guards_heading="Защитные интервалы",
     guards_empty="Защитных интервалов нет.",
     split_heading="Разбиение",
@@ -753,18 +1027,144 @@ RU = _RussianCatalog(
     plan_counts_caption="Числа планов из конфигурации. Это нагрузка на разметку, не оценка точности.",
     contact_heading="Контактный лист",
     contact_empty="Отобранных JPEG нет. Контактный лист не строится. Рамки не подставляются.",
-    cvat_heading="CVAT",
+    cvat_heading="Разметка в CVAT",
     export_cvat="Экспорт для CVAT",
     import_coco="Импорт COCO",
-    import_file="Путь к ZIP",
+    import_file="ZIP с разметкой",
     import_path_required="Укажите путь к ZIP с разметкой.",
     import_bad_name="Недопустимое имя файла. Имя не должно содержать «..».",
     batch_split="Часть пакета",
     include_predictions="Предразметка train",
-    predictions_help="Файл predictions.coco.json не является ground truth.",
+    predictions_help=(
+        "Только для части «обучение». Это подсказки модели, не ground truth "
+        "и не готовая разметка. Проверка и итоговая оценка скачиваются без подсказок."
+    ),
+    step_label_title="Разметка",
+    step_snapshot_title="Снимок",
+    step_episodes_text=(
+        "Эпизод — один заезд самосвала или ожидание между заездами. "
+        "Секунды от начала ролика. Конец не входит."
+    ),
+    step_split_text=(
+        "Поставьте блоки обучения, проверки и итоговой оценки. "
+        "Секунда вне блоков ни к одной роли не относится. Фиксация один раз."
+    ),
+    step_sample_text=(
+        "Здесь рамки не ставятся. Программа выбирает редкие кадры, "
+        "чтобы не размечать сотни почти одинаковых."
+    ),
+    step_label_text="Рамки рисуются в CVAT, не на этой странице. Сначала скачайте пакет.",
+    step_snapshot_text=(
+        "Снимок — это датасет для страницы «Обучение». В него входят только "
+        "проверенные кадры. Кнопка открывается, когда все ролики зафиксированы "
+        "и во всём проекте есть хотя бы один проверенный кадр в обучении и в проверке."
+    ),
+    step_now="сейчас",
+    step_done="готово",
+    step_wait="ждёт",
+    step_wait_episode="Сначала добавьте эпизод.",
+    step_wait_frozen="Сначала зафиксируйте разбиение.",
+    step_wait_frames="Сначала отберите кадры.",
+    step_snapshot_open=(
+        "Кнопка уже открыта. В снимок всё равно входят только проверенные кадры."
+    ),
+    step_snapshot_written="Снимок уже записан.",
+    episode_group_help=(
+        "Один и тот же код, если заезды идут одновременно и их нельзя "
+        "разнести по разным частям."
+    ),
+    episode_label_help=(
+        "Короткое имя для себя, например «погрузка». На классы детектора не влияет."
+    ),
+    freeze_once="После фиксации границы этого ролика не меняются.",
+    split_name_train="обучение",
+    split_name_validation="проверка",
+    split_name_test="итоговая оценка",
+    equipment_block_help=(
+        "В блоке обучения должны быть все единицы и части оборудования, "
+        "которые модель должна узнавать."
+    ),
+    action_block_help="В блоке обучения должны быть все действия.",
+    block_guard_help=(
+        "Между блоками разных ролей оставьте не менее 10 с без роли. "
+        "Этот промежуток не отбирается ни в одну часть. "
+        "Операция, пересекающая границу, целиком уходит в один блок."
+    ),
+    block_guard_gap=(
+        "Промежуток между блоками {earlier} ({earlier_end} с) и {later} ({later_start} с) — "
+        "{gap} с, меньше {minimum} с. Разбиение зафиксировано как есть."
+    ),
+    block_unassigned="не назначено",
+    block_overlap="Блоки пересекаются. Одна секунда не относится к двум ролям.",
+    add_block="Добавить блок",
+    save_blocks="Сохранить блоки",
+    block_start="Начало",
+    block_end="Конец",
+    block_role="Роль",
+    blocks_saved="Блоки записаны.",
+    blocks_save_failed="Не удалось сохранить блоки.",
+    sample_plan_help=(
+        "Диагностический — первая проверка импорта. Содержательный — основной набор. "
+        "Расширенный — больший набор. Числа планов — нагрузка на разметку, не оценка точности."
+    ),
+    label_class_names=(
+        "Классы каталога проекта. Имя — идентификатор. Название и рамка — как записаны."
+    ),
+    add_class="Добавить класс",
+    class_added="Класс записан.",
+    add_class_name="Имя класса",
+    add_class_title="Название",
+    add_class_box="Рамка",
+    class_box_lines={
+        "excavator_body": (
+            "Кабина, поворотная платформа, противовес и видимая ходовая часть, "
+            "без стрелы, рукояти и ковша."
+        ),
+        "bucket": (
+            "Видимая металлическая часть ковша, включая зубья, "
+            "без рукояти, падающей породы и тени."
+        ),
+        "haul_truck": "Вся видимая машина: кабина, шасси, колёса и кузов.",
+        "truck_bed": (
+            "Видимый грузовой кузов как конструкция, не только поверхность груза "
+            "и не только открытый проём."
+        ),
+    },
+    label_review_rule=(
+        "На каждом кадре атрибут review_status=reviewed. Без него кадр не входит "
+        "в обучение. Пустой проверенный кадр — объектов нет. "
+        "Непроверенный кадр — разметки ещё нет."
+    ),
+    label_zip_back=(
+        "Обратно загрузите ZIP, в котором есть исходный frames_manifest.csv, "
+        "те же JPEG и COCO из CVAT (images, annotations, categories). "
+        "Subset CVAT не задаёт часть."
+    ),
+    export_path_note="После экспорта сообщение на странице показывает путь к zip.",
+    download_batch="Скачать пакет",
+    contact_no_boxes="Отобранные кадры. Рамок на них нет.",
     snapshot_dataset="Снимок датасета",
     snapshot_locked="Снимок датасета закрыт, пока разбиение не зафиксировано.",
     snapshot_ready="Разбиение зафиксировано. Можно собрать снимок датасета.",
+    snapshot_other=(
+        "У ролика «{name}» разбиение ещё не зафиксировано. "
+        "Снимок собирается по всему проекту."
+    ),
+    snapshot_no_train=(
+        "Нет проверенных кадров в блоке обучения. "
+        "Проверенных обучаемых: обучение {train}, проверка {validation}."
+    ),
+    snapshot_no_validation=(
+        "Нет проверенных кадров в блоке проверки. "
+        "Проверенных обучаемых: обучение {train}, проверка {validation}."
+    ),
+    snapshot_gate_scope=(
+        "Порог снимка считается по всему проекту: нужны проверенные кадры "
+        "в обучении и в проверке, а не в одном ролике."
+    ),
+    label_counts_this_video="Счётчики этого ролика",
+    label_counts_project="Счётчики всего проекта",
+    label_counts_snapshot="Проверка последнего снимка",
     review_heading="Проверка разметки",
     count_reviewed="Проверенные",
     count_unreviewed="Непроверенные",
@@ -779,8 +1179,8 @@ RU = _RussianCatalog(
     column_start_s="начало, с",
     column_end_s="конец, с",
     column_label="метка",
-    column_split_group="split_group_id",
-    column_split="split",
+    column_split_group="Группа заезда",
+    column_split="Часть",
     sample_plan_labels={
         "diagnostic": "диагностический",
         "content": "содержательный",
@@ -815,7 +1215,14 @@ RU = _RussianCatalog(
     device_help="auto выбирает одно устройство: CUDA, затем MPS, затем CPU. Отказ устройства не перезапускает обучение на другом.",
     train_start_help="Ставит обучение в очередь отдельного процесса. Повторный запуск и обновление страницы второе задание не создают.",
     train_cancel_help="Останавливает текущее задание и снимает блокировку.",
-    dataset_not_ready="Снимок не готов к обучению: в train или validation нет проверенных изображений. Обучение не запускается. Кривая loss не строится.",
+    dataset_not_ready=(
+        "Снимок не готов к обучению: нет проверенных кадров в блоке обучения "
+        "или в блоке проверки. Обучение не запускается. Кривая loss не строится."
+    ),
+    snapshot_not_built=(
+        "Снимок датасета ещё не собран. Обучение не запускается. "
+        "Кривая loss не строится."
+    ),
     train_log_broken="Журнал метрик не читается. Кривая loss не строится.",
     analysis_empty="Прогона нет. Время источника, версия модели и доля наблюдаемых кадров: не рассчитано. Список рамок не строится.",
     analysis_no_video="Ролика нет. Добавьте файл на странице «Видео». Ссылка на ролик не скачивается.",
@@ -830,11 +1237,20 @@ RU = _RussianCatalog(
     analysis_queued="Анализ поставлен в очередь.",
     export_queued="Кодирование поставлено в очередь.",
     player_waiting="MP4 ещё нет. Исходные кадры здесь не перерисовываются.",
-    custom_needs_bundle="Своя модель требует bundle с weights.pth и четырьмя классами. Без bundle запуск не выполняется. Базовая модель не подставляется.",
+    custom_needs_bundle="Своя модель требует bundle с weights.pth и классами выбранного каталога. Без bundle запуск не выполняется. Базовая модель не подставляется.",
     model_mode="Модель",
     mode_baseline="Базовая",
     mode_custom="Своя",
     bundle_label="Bundle",
+    bundle_synthetic="синтетическая проводка",
+    synthetic_card_use=(
+        "Синтетический прогон проводки: разметка, снимок и задание доходят до bundle. "
+        "Это не модель и не измерение точности."
+    ),
+    synthetic_card_role=(
+        "Роль метрик: synthetic_wiring. "
+        "mAP и AP не рассчитаны. Это не карточка модели."
+    ),
     threshold_new_run="Изменение порога не переписывает завершённый прогон. Нужен новый запуск.",
     bt_high="Порог высокой уверенности ByteTrack",
     bt_activation="Порог активации трека",
@@ -923,10 +1339,11 @@ RU = _RussianCatalog(
     theme_write_failed="Не удалось записать тему, оформление этого сеанса сохранено.",
     leads={
         "video": "Ролик и список запусков.",
-        "data": "Эпизоды, фиксация разбиения и обмен разметкой.",
+        "data": "Четыре шага: блоки разбиения, отбор кадров, разметка в CVAT, снимок для обучения.",
         "training": "Профиль обучения, статус и checkpoint. Кривая loss — только из журнала.",
         "analysis": "Закодированный результат и один диагностический кадр.",
         "quality": "Измеренные метрики детектора и ошибки. Нет оценки — числа не подставляются.",
+        "actions": "Каталог действий и интервалы на шкале ролика.",
         "events": "Кандидаты событий и показатели. Сейчас раздел выключен.",
     },
     locale_label="Язык",
@@ -936,7 +1353,249 @@ RU = _RussianCatalog(
     process_lost="процесс пропал",
     partial_result="частичный результат",
     events_unavailable_caption="События и показатели в версии 0.1 не рассчитываются.",
+    create_project_heading="Новый проект",
+    create_project_name="Имя проекта",
+    create_project_button="Создать проект",
+    catalog_existing="Существующий каталог",
+    catalog_new="Новый каталог",
+    catalog_id_label="Идентификатор каталога",
+    catalog_copy_label="Скопировать каталог",
+    catalog_copy_none="не копировать",
+    catalog_none="каталог не выбран",
+    catalog_required="Выберите каталог или создайте новый. Проект без каталога не создаётся.",
+    catalog_id_required="Укажите идентификатор нового каталога.",
+    class_row_incomplete="В строке класса нужны имя, название и рамка.",
+    project_name_required="Укажите имя проекта.",
+    add_class_row="Добавить строку",
+    class_name_column="имя",
+    class_title_column="название",
+    class_box_column="рамка",
+    catalog_classes_heading="Классы каталога",
     project_write_failed="Не удалось записать проект, выбранный проект этого сеанса сохранён.",
+    label_page_title="Разметка кадра",
+    label_open_app="Разметить в приложении",
+    label_loading="Разметка кадра ещё не загружена.",
+    label_back_to_data="К данным и разметке",
+    label_progress=(
+        "{split}: проверено {reviewed} из {total}, "
+        "не проверено {unreviewed}, исключено {excluded}."
+    ),
+    label_mark_reviewed="Проверено",
+    label_mark_excluded="Исключить",
+    label_mark_unreviewed="Не проверено",
+    label_unreviewed_hint=(
+        "Непроверенный кадр сохраняется и не считается отрицательным примером."
+    ),
+    label_visibility_clear="полностью видно",
+    label_visibility_partial="частично видно",
+    label_visibility_unlabelable="нельзя разметить",
+    label_unlabelable_excludes=(
+        "Видимость «нельзя разметить» переводит кадр в excluded. "
+        "В обучение детектора он не входит."
+    ),
+    label_truncated="обрезано краем кадра",
+    label_delete_box="Удалить рамку",
+    label_prev="Предыдущий кадр",
+    label_next="Следующий кадр",
+    label_annotator="Разметчик",
+    label_saved="Кадр сохранён.",
+    label_save_failed="Не удалось сохранить кадр.",
+    label_not_frozen="Сначала зафиксируйте блоки. Кадр не сохраняется.",
+    label_frame_not_sampled="Этого кадра нет в отборе. Сначала отберите кадры.",
+    label_fit_width_note=(
+        "Кадр показан по ширине панели. "
+        "Масштаб на экране не меняет координаты в пикселях изображения."
+    ),
+    label_save="Сохранить",
+    label_note="Заметка кадра",
+    label_box_note="Заметка рамки",
+    label_instance="Метка экземпляра",
+    label_class="Класс",
+    label_visibility="Видимость",
+    label_invalid_json="Нужны review_status и список boxes.",
+    label_invalid_review="Статус проверки: unreviewed, reviewed или excluded.",
+    label_invalid_visibility="Видимость: clear, partial или unlabelable.",
+    label_invalid_box="Рамка вне изображения или с неположительным размером.",
+    label_unknown_class=(
+        "Имени класса нет в каталоге проекта. Ближайший класс не подставляется."
+    ),
+    label_unknown_video="Видео не найдено в этом проекте.",
+    label_unknown_frame="Кадр не найден в отборе этого видео.",
+    label_frame_unassigned="Кадр не попадает ни в один блок.",
+    label_image_missing="Изображения этого кадра нет в отборе.",
+    label_annotator_invalid="Укажите имя разметчика одной строкой.",
+    label_unsupported_crowd=(
+        "iscrowd, отличное от 0, не записывается и не считается окклюзией."
+    ),
+    label_unsupported_media_type="Тело запроса должно быть в формате JSON.",
+    label_cross_site="Запрос с другого сайта не принимается.",
+    label_confirm_empty="Кадр без объектов станет отрицательным примером",
+    label_excluded_hint=(
+        "Исключённый кадр сохраняется и не входит в обучение детектора."
+    ),
+    label_filter_status="Показ",
+    label_filter_all="все",
+    label_filter_unreviewed="непроверенные",
+    label_filter_reviewed="проверенные",
+    label_filter_excluded="исключённые",
+    label_filter_split="Блок",
+    label_filter_all_splits="все блоки",
+    label_shortcuts_title="Клавиши",
+    label_shortcut_class="класс выбранной рамки или следующей",
+    label_shortcut_visibility="видимость по кругу",
+    label_shortcut_truncated="обрезано краем кадра",
+    label_shortcut_reviewed="сохранить как проверенный и открыть следующий кадр",
+    label_shortcut_excluded="сохранить как исключённый и открыть следующий кадр",
+    label_shortcut_unreviewed="сохранить как непроверенный, рамки остаются",
+    label_shortcut_nav="предыдущий или следующий кадр",
+    label_shortcut_delete="удалить выбранную рамку",
+    label_shortcut_help="показать список клавиш",
+    label_reviewed_at="Проверено в",
+    label_frame_index="Кадр",
+    label_frames_heading="Кадры отбора",
+    label_review_group="Статус проверки",
+    label_suggest_button="Предложить рамки (только train)",
+    label_suggest_model="Модель",
+    label_suggest_accept="Принять",
+    label_suggest_accept_all="Принять все",
+    label_suggest_reject_all="Отклонить все",
+    label_suggest_none="Предложений рамок ещё нет. Принять или отклонить нечего.",
+    label_not_train_frame=(
+        "Предложения только для кадров train. "
+        "Кадры validation и test их не получают."
+    ),
+    label_job_running=(
+        "В этом рабочем каталоге уже выполняется задание. "
+        "Предложения рамок не строятся."
+    ),
+    label_bundle_missing=(
+        "Нет своей модели для предложений. "
+        "Базовая и синтетическая не используются."
+    ),
+    label_suggest_dropped="Имён нет в каталоге: {count}. Они не стали рамками.",
+    action_catalog_heading="Каталог действий",
+    action_name_column="Имя",
+    action_title_column="Подпись",
+    action_seed="Заполнить примером",
+    action_name_help=(
+        "name — английский токен. title показывается как введено, без перевода."
+    ),
+    action_add="Добавить",
+    action_delete="Удалить",
+    action_save="Сохранить",
+    action_edit_title="Сохранить подпись",
+    action_set_start="Начало = текущее время",
+    action_set_end="Конец = текущее время",
+    action_select="Действие",
+    action_overlap=(
+        "Интервалы действий пересекаются. Одна секунда не относится к двум действиям."
+    ),
+    action_crosses_block="Интервал пересекает границу блока. Он не обрезается.",
+    action_outside_block="Интервал не лежит ни в одном блоке роли. Он не обрезается.",
+    action_invalid_interval="Интервал должен быть полуоткрытым: конец больше начала.",
+    action_stale="Список интервалов устарел. Замена не записана.",
+    action_save_failed="Интервалы не записаны.",
+    action_blocks_unfrozen=(
+        "Блоки роли ещё не зафиксированы. Интервалы принимаются по черновику "
+        "и будут проверены по зафиксированному разбиению перед обучением."
+    ),
+    action_coverage_missing="нет в обучении или в проверке",
+    action_coverage_hint=(
+        "Каждое действие из примера нужно хотя бы раз в обучении и раз в проверке. "
+        "swing_loaded и swing_empty — разные действия, разметьте оба поворота."
+    ),
+    action_table_start="Начало, с",
+    action_table_end="Конец, с",
+    action_table_duration="Длительность, с",
+    action_table_action="Действие",
+    action_table_role="Роль",
+    action_shortcuts=(
+        "Клавиши: i — начало, o — конец, Enter — добавить, Delete — удалить, "
+        "1–9 — действие, запятая и точка — один кадр."
+    ),
+    action_snap_note=(
+        "Шаг кадра только на экране: показанный край округляется к шагу частоты кадров. "
+        "В файл пишутся секунды исходного видео, которые посчитал сервер, "
+        "а не номер кадра / fps."
+    ),
+    action_reload="Перезагрузить",
+    action_draft="черновик",
+    action_no_video="В проекте нет видео.",
+    action_step_catalog="Каталог",
+    action_step_labels="Интервалы",
+    action_step_train="Обучение",
+    action_step_results="Результат",
+    action_step_catalog_text="Добавьте действия. Имя — английский токен, подпись хранится как введена.",
+    action_step_labels_text=(
+        "Отметьте интервалы под плеером. Один момент — одно действие, внутри одного блока роли."
+    ),
+    action_step_train_wait="Обучение классификатора действий на этом экране ещё не подключено.",
+    action_step_results_wait="Результаты и оценка появятся после обучения. Сейчас их нет.",
+    action_step_need_catalog="Сначала заполните каталог действий.",
+    action_step_train_text=(
+        "Отметьте завершённые custom-прогоны одного детектора и одной частоты. "
+        "Старт ждёт ответ сервера о готовности."
+    ),
+    action_step_results_text=(
+        "Интервалы модели, сравнение с разметкой обучения и проверки, затем оценка. "
+        "Блок итоговой оценки открывается только после записи файла."
+    ),
+    action_runs_heading="Прогоны анализа",
+    action_no_runs="Нет завершённого custom-прогона анализа для этого видео.",
+    action_ready_heading="Готовность",
+    action_ready_ok="Выбранные прогоны можно отправить на обучение.",
+    action_start="Старт",
+    action_cancel="Отмена",
+    action_advanced="Дополнительно",
+    action_epochs="Эпохи",
+    action_window_s="Окно, с",
+    action_min_confidence="Мин. уверенность",
+    action_min_duration="Мин. длительность, с",
+    action_models_heading="Модели действий",
+    action_no_model="Модели действий ещё нет.",
+    action_support_train="Окна обучения",
+    action_support_validation="Окна проверки",
+    action_classes_scored="Классы в macro-F1",
+    action_selection_unstable="Мало окон проверки: выбор чекпоинта ненадёжен.",
+    action_selection_stable="Окон проверки достаточно для выбора чекпоинта.",
+    action_infer_heading="Распознавание",
+    action_other_detector="другой детектор",
+    action_infer_start="Запустить",
+    action_inferences_heading="Задания распознавания",
+    action_no_inference="Распознавания ещё нет.",
+    action_select_runs="Отметьте хотя бы один прогон.",
+    action_unknown_share="Доля unknown",
+    action_export_csv="Скачать CSV",
+    action_compare_heading="Размеченные интервалы",
+    action_test_hidden=(
+        "интервалы блока итоговой оценки скрыты до финальной проверки"
+    ),
+    action_predicted_heading="Интервалы модели",
+    action_predicted_empty="Интервалов модели ещё нет.",
+    action_evaluate_validation="Оценить на блоке проверки",
+    action_evaluate_final="Итоговая оценка (test)",
+    action_final_once="Файл пишется один раз и больше не меняется.",
+    action_eval_empty="Оценки на блоке проверки ещё нет.",
+    action_precision="Точность",
+    action_recall="Полнота",
+    action_f1="F1",
+    action_support_frames="Кадры",
+    action_support_intervals="Интервалы",
+    action_accuracy="Точность кадра",
+    action_macro_f1="macro-F1",
+    action_evaluated_frames="Кадров оценено",
+    action_unlabelled_frames="Кадров без метки",
+    action_unknown_rate="Доля unknown",
+    action_mean_confidence="Средняя уверенность",
+    action_progress="Ход обучения",
+    action_no_chart="Кривая появится после первой эпохи.",
+    action_epoch="Эпоха",
+    action_run_fps="кадр/с",
+    job_already_running=(
+        "В этом рабочем каталоге уже выполняется задание. "
+        "Новое обучение или анализ не запускается, "
+        "пока текущее не завершится или не будет отменено."
+    ),
 )
 
 EN = _EnglishCatalog(
@@ -991,6 +1650,7 @@ EN = _EnglishCatalog(
     page_data="Data and labeling",
     page_training="Training",
     page_analysis="Analysis",
+    page_actions="Actions",
     page_events="Events",
     project_label="Project",
     no_project="no project",
@@ -1066,19 +1726,32 @@ EN = _EnglishCatalog(
     propose_done="Proposal saved. The split is not frozen yet.",
     propose_kept_frozen="Proposal saved. The frozen split is not replaced.",
     split_hash="Split hash",
-    proposal_missing="There is no proposal yet.",
-    proposal_broken="The split proposal file is damaged.",
-    proposal_heading="Proposal",
+    proposal_missing="There are no blocks yet.",
+    proposal_broken="The split file is damaged.",
+    proposal_legacy="A haul-episode split is still on disk. It is not a block split, and it was not erased. Place the training, validation, and final-evaluation blocks.",
+    proposal_heading="Blocks",
     frozen_heading="Frozen split",
     independence_label="Independence",
     episodes_heading="Episodes",
-    episodes_empty="There are no episodes. Add an interval, then propose a split.",
+    episodes_empty="There are no episodes. Cut the timeline, then propose a split.",
     episode_id="Episode identifier",
-    episode_group="split_group_id",
+    episode_group="Pass group",
     episode_label="Label",
     episode_concurrent="Concurrent passes",
     add_episode="Add episode",
     episode_added="Episode added.",
+    default_episode_label="pass",
+    cut_here="Cut",
+    cut_hint="The S key cuts at the current time.",
+    concurrent_pass="Concurrent pass",
+    remove_cut="Remove the cut",
+    save_episode_label="Save the label",
+    episodes_frozen_note="The split is already frozen.",
+    frame_step_label="Frame step",
+    arrow_frame_hint="Arrow keys move the selected boundary by one frame.",
+    nudge_hint="Shift and the arrow keys move the selected boundary by 1 s.",
+    episodes_saved="Episodes saved.",
+    episodes_save_failed="Could not save the episodes.",
     guards_heading="Guard intervals",
     guards_empty="There are no guard intervals.",
     split_heading="Split",
@@ -1093,18 +1766,145 @@ EN = _EnglishCatalog(
     plan_counts_caption="Plan counts from the configuration. This is labeling load, not an accuracy estimate.",
     contact_heading="Contact sheet",
     contact_empty="There are no sampled JPEGs. The contact sheet is not built. Boxes are not substituted.",
-    cvat_heading="CVAT",
+    cvat_heading="Labeling in CVAT",
     export_cvat="Export for CVAT",
     import_coco="Import COCO",
-    import_file="Path to the ZIP",
+    import_file="Labeled ZIP",
     import_path_required="Enter the path to the labeling ZIP.",
     import_bad_name='Invalid file name. The name must not contain "..".',
     batch_split="Batch split",
     include_predictions="Train pre-labeling",
-    predictions_help="The file predictions.coco.json is not ground truth.",
+    predictions_help=(
+        "Only for the training split. These are model hints, not ground truth "
+        "and not finished labels. The validation and final-evaluation splits download without hints."
+    ),
+    step_label_title="Labeling",
+    step_snapshot_title="Snapshot",
+    step_episodes_text=(
+        "An episode is one haul-truck pass or the wait between passes. "
+        "Seconds run from the start of the clip. The end is not included."
+    ),
+    step_split_text=(
+        "Place training, validation, and final-evaluation blocks. "
+        "A second outside the blocks has no role. Freeze once."
+    ),
+    step_sample_text=(
+        "Boxes are not drawn here. The program picks sparse frames so you do not "
+        "label hundreds that are almost the same."
+    ),
+    step_label_text="Boxes are drawn in CVAT, not on this page. Download the batch first.",
+    step_snapshot_text=(
+        "The snapshot is the dataset for the Training page. It includes only "
+        "reviewed frames. The button opens when every video is frozen and the "
+        "whole project has at least one reviewed frame in training and in validation."
+    ),
+    step_now="now",
+    step_done="done",
+    step_wait="waiting",
+    step_wait_episode="Add an episode first.",
+    step_wait_frozen="Freeze the split first.",
+    step_wait_frames="Sample frames first.",
+    step_snapshot_open=(
+        "The button can already be used. The snapshot still contains only reviewed frames."
+    ),
+    step_snapshot_written="The snapshot is already written.",
+    episode_group_help=(
+        "Use the same code when passes happen together and cannot be "
+        "placed in different parts."
+    ),
+    episode_label_help=(
+        'A short name for yourself, for example "loading". It does not affect detector classes.'
+    ),
+    freeze_once="After you freeze, this clip's boundaries do not change.",
+    split_name_train="training",
+    split_name_validation="validation",
+    split_name_test="final evaluation",
+    equipment_block_help=(
+        "The training block must contain every equipment unit and every part "
+        "the model should recognize."
+    ),
+    action_block_help="The training block must contain every action.",
+    block_guard_help=(
+        "Leave at least 10 s without a role between blocks of different roles. "
+        "That gap is sampled into no split. "
+        "An operation that crosses a boundary goes entirely into one block."
+    ),
+    block_guard_gap=(
+        "The gap between {earlier} ({earlier_end} s) and {later} ({later_start} s) is "
+        "{gap} s, under {minimum} s. The split is frozen as is."
+    ),
+    block_unassigned="unassigned",
+    block_overlap="Blocks overlap. One second does not belong to two roles.",
+    add_block="Add a block",
+    save_blocks="Save blocks",
+    block_start="Start",
+    block_end="End",
+    block_role="Role",
+    blocks_saved="Blocks saved.",
+    blocks_save_failed="Could not save the blocks.",
+    sample_plan_help=(
+        "Diagnostic is the first import check. Content is the main set. "
+        "Expanded is the larger set. Plan counts are labeling load, not an accuracy estimate."
+    ),
+    label_class_names=(
+        "Classes from the project catalog. The name is the id. "
+        "Title and box are shown as stored."
+    ),
+    add_class="Add class",
+    class_added="Class added.",
+    add_class_name="Class name",
+    add_class_title="Title",
+    add_class_box="Box",
+    class_box_lines={
+        "excavator_body": (
+            "Cab, rotating platform, counterweight, and the visible undercarriage, "
+            "without the boom, stick, or bucket."
+        ),
+        "bucket": (
+            "The visible metal of the bucket, including the teeth, "
+            "without the stick, falling rock, or shadow."
+        ),
+        "haul_truck": "The whole visible machine: cab, chassis, wheels, and bed.",
+        "truck_bed": (
+            "The visible cargo bed as a structure, not only the load surface "
+            "and not only the open mouth."
+        ),
+    },
+    label_review_rule=(
+        "On every frame set review_status=reviewed. Without it the frame is not "
+        "used for training. A reviewed frame with no objects is empty. "
+        "An unreviewed frame has no labeling yet."
+    ),
+    label_zip_back=(
+        "Upload a ZIP that contains the original frames_manifest.csv, the same JPEGs, "
+        "and the CVAT COCO file (images, annotations, categories). "
+        "A CVAT subset does not assign the split."
+    ),
+    export_path_note="After export, the notice on the page shows the zip path.",
+    download_batch="Download the batch",
+    contact_no_boxes="Sampled frames. There are no boxes on them.",
     snapshot_dataset="Dataset snapshot",
     snapshot_locked="The dataset snapshot stays closed until the split is frozen.",
     snapshot_ready="The split is frozen. The dataset snapshot can be built.",
+    snapshot_other=(
+        "The video \"{name}\" has no frozen split yet. "
+        "The snapshot covers the whole project."
+    ),
+    snapshot_no_train=(
+        "No reviewed frames in the training block. "
+        "Reviewed trainable: training {train}, validation {validation}."
+    ),
+    snapshot_no_validation=(
+        "No reviewed frames in the validation block. "
+        "Reviewed trainable: training {train}, validation {validation}."
+    ),
+    snapshot_gate_scope=(
+        "The snapshot gate is project-wide: reviewed frames are required "
+        "in training and in validation, not in one video."
+    ),
+    label_counts_this_video="Counts for this video",
+    label_counts_project="Counts for the whole project",
+    label_counts_snapshot="Latest snapshot check",
     review_heading="Label review",
     count_reviewed="Reviewed",
     count_unreviewed="Unreviewed",
@@ -1119,8 +1919,8 @@ EN = _EnglishCatalog(
     column_start_s="Start, s",
     column_end_s="End, s",
     column_label="Label",
-    column_split_group="split_group_id",
-    column_split="split",
+    column_split_group="Pass group",
+    column_split="Part",
     sample_plan_labels={
         "diagnostic": "Diagnostic",
         "content": "Content",
@@ -1155,7 +1955,15 @@ EN = _EnglishCatalog(
     device_help="auto selects one device: CUDA, then MPS, then CPU. A device failure does not restart training on another.",
     train_start_help="Queues training in a separate process. Starting again and refreshing the page do not create a second job.",
     train_cancel_help="Stops the current job and releases the lock.",
-    dataset_not_ready="The snapshot is not ready for training: train or validation has no reviewed images. Training does not start. The loss curve is not built.",
+    dataset_not_ready=(
+        "The snapshot is not ready for training: there are no reviewed frames "
+        "in the training block or in the validation block. Training does not start. "
+        "The loss curve is not built."
+    ),
+    snapshot_not_built=(
+        "The dataset snapshot has not been built yet. Training does not start. "
+        "The loss curve is not built."
+    ),
     train_log_broken="The metrics log cannot be read. The loss curve is not built.",
     analysis_empty="There is no run. Source time, model version, and the share of observed frames: not calculated. The box list is not built.",
     analysis_no_video="There is no video. Add a file on the Video page. A link to the video is not downloaded.",
@@ -1170,11 +1978,20 @@ EN = _EnglishCatalog(
     analysis_queued="Analysis queued.",
     export_queued="Encoding queued.",
     player_waiting="There is no MP4 yet. Source frames are not redrawn here.",
-    custom_needs_bundle="A custom model requires a bundle with weights.pth and four classes. Without a bundle the run does not start. The baseline model is not substituted.",
+    custom_needs_bundle="A custom model requires a bundle with weights.pth and the classes of the selected catalog. Without a bundle the run does not start. The baseline model is not substituted.",
     model_mode="Model",
     mode_baseline="Baseline",
     mode_custom="Custom",
     bundle_label="Bundle",
+    bundle_synthetic="synthetic wiring",
+    synthetic_card_use=(
+        "Synthetic wiring run: labels, the snapshot, and the job reach a bundle. "
+        "This is not a model and not an accuracy measurement."
+    ),
+    synthetic_card_role=(
+        "Metric role: synthetic_wiring. "
+        "mAP and AP are not calculated. This is not a model card."
+    ),
     threshold_new_run="Changing a threshold does not rewrite a finished run. A new run is required.",
     bt_high="ByteTrack high-confidence threshold",
     bt_activation="Track activation threshold",
@@ -1263,10 +2080,11 @@ EN = _EnglishCatalog(
     theme_write_failed="Could not save the theme. This session's appearance is kept.",
     leads={
         "video": "The clip and the list of runs.",
-        "data": "Episodes, freezing the split, and labeling exchange.",
+        "data": "Four steps: split blocks, frame sampling, labeling in CVAT, and a snapshot for training.",
         "training": "Training profile, status, and checkpoint. The loss curve comes only from the log.",
         "analysis": "An encoded result and one diagnostic frame.",
         "quality": "Measured detector metrics and errors. Without an evaluation, numbers are not substituted.",
+        "actions": "The action catalog and intervals on the clip timeline.",
         "events": "Event candidates and indicators. This section is off for now.",
     },
     locale_label="Language",
@@ -1276,7 +2094,241 @@ EN = _EnglishCatalog(
     process_lost="The process disappeared",
     partial_result="The result is partial",
     events_unavailable_caption="Events and indicators are not calculated in version 0.1.",
+    create_project_heading="New project",
+    create_project_name="Project name",
+    create_project_button="Create project",
+    catalog_existing="Existing catalog",
+    catalog_new="New catalog",
+    catalog_id_label="Catalog id",
+    catalog_copy_label="Copy a catalog",
+    catalog_copy_none="do not copy",
+    catalog_none="no catalog selected",
+    catalog_required="Choose a catalog or create one. A project without a catalog is not created.",
+    catalog_id_required="Enter an id for the new catalog.",
+    class_row_incomplete="A class row needs name, title, and box.",
+    project_name_required="Enter a project name.",
+    add_class_row="Add a row",
+    class_name_column="name",
+    class_title_column="title",
+    class_box_column="box",
+    catalog_classes_heading="Catalog classes",
     project_write_failed="Could not save the project. This session's project is kept.",
+    label_page_title="Frame labeling",
+    label_open_app="Label in the app",
+    label_loading="Frame labeling is not loaded yet.",
+    label_back_to_data="Back to data and labeling",
+    label_progress=(
+        "{split}: reviewed {reviewed} of {total}, "
+        "unreviewed {unreviewed}, excluded {excluded}."
+    ),
+    label_mark_reviewed="Reviewed",
+    label_mark_excluded="Exclude",
+    label_mark_unreviewed="Unreviewed",
+    label_unreviewed_hint="An unreviewed frame is stored and is not a negative example.",
+    label_visibility_clear="fully visible",
+    label_visibility_partial="partly visible",
+    label_visibility_unlabelable="cannot be labeled",
+    label_unlabelable_excludes=(
+        "Visibility “cannot be labeled” stores the frame as excluded. "
+        "It stays out of detector training."
+    ),
+    label_truncated="cut off by the frame edge",
+    label_delete_box="Delete box",
+    label_prev="Previous frame",
+    label_next="Next frame",
+    label_annotator="Annotator",
+    label_saved="Frame saved.",
+    label_save_failed="Could not save the frame.",
+    label_not_frozen="Freeze the blocks first. The frame is not saved.",
+    label_frame_not_sampled="This frame is not in the sample. Sample frames first.",
+    label_fit_width_note=(
+        "The frame is shown fitted to the panel width. "
+        "Screen scale does not change image-pixel coordinates."
+    ),
+    label_save="Save",
+    label_note="Frame note",
+    label_box_note="Box note",
+    label_instance="Instance id",
+    label_class="Class",
+    label_visibility="Visibility",
+    label_invalid_json="The body needs review_status and a boxes list.",
+    label_invalid_review="Review status must be unreviewed, reviewed, or excluded.",
+    label_invalid_visibility="Visibility must be clear, partial, or unlabelable.",
+    label_invalid_box="The box is outside the image or has a non-positive size.",
+    label_unknown_class=(
+        "That class name is not in the project catalog. "
+        "A nearby class is not substituted."
+    ),
+    label_unknown_video="The video is not in this project.",
+    label_unknown_frame="The frame is not in this video's sample.",
+    label_frame_unassigned="The frame does not fall inside a block.",
+    label_image_missing="This frame's image is not in the sample.",
+    label_annotator_invalid="Enter the annotator name as one line.",
+    label_unsupported_crowd=(
+        "iscrowd other than 0 is not stored and is not treated as occlusion."
+    ),
+    label_unsupported_media_type="The request body must be JSON.",
+    label_cross_site="A request from another site is not accepted.",
+    label_confirm_empty="A frame with no objects becomes a negative example",
+    label_excluded_hint="An excluded frame is stored and stays out of detector training.",
+    label_filter_status="Show",
+    label_filter_all="all",
+    label_filter_unreviewed="unreviewed",
+    label_filter_reviewed="reviewed",
+    label_filter_excluded="excluded",
+    label_filter_split="Block",
+    label_filter_all_splits="all blocks",
+    label_shortcuts_title="Keys",
+    label_shortcut_class="class of the selected box, or of the next box",
+    label_shortcut_visibility="cycle visibility",
+    label_shortcut_truncated="cut off by the frame edge",
+    label_shortcut_reviewed="save as reviewed and open the next frame",
+    label_shortcut_excluded="save as excluded and open the next frame",
+    label_shortcut_unreviewed="save as unreviewed; the boxes stay",
+    label_shortcut_nav="previous or next frame",
+    label_shortcut_delete="delete the selected box",
+    label_shortcut_help="show the key list",
+    label_reviewed_at="Reviewed at",
+    label_frame_index="Frame",
+    label_frames_heading="Sampled frames",
+    label_review_group="Review status",
+    label_suggest_button="Suggest boxes (train only)",
+    label_suggest_model="Model",
+    label_suggest_accept="Accept",
+    label_suggest_accept_all="Accept all",
+    label_suggest_reject_all="Reject all",
+    label_suggest_none="There are no box suggestions yet. There is nothing to accept or reject.",
+    label_not_train_frame=(
+        "Suggestions are only for train frames. "
+        "Validation and test frames do not receive them."
+    ),
+    label_job_running=(
+        "A job is already running in this workspace. "
+        "Box suggestions are not built."
+    ),
+    label_bundle_missing=(
+        "There is no custom model for suggestions. "
+        "Baseline and synthetic bundles are not used."
+    ),
+    label_suggest_dropped=(
+        "Names missing from the catalog: {count}. They were not turned into boxes."
+    ),
+    action_catalog_heading="Action catalog",
+    action_name_column="Name",
+    action_title_column="Title",
+    action_seed="Fill with the example",
+    action_name_help="name is an English token. title is shown as stored, without translation.",
+    action_add="Add",
+    action_delete="Delete",
+    action_save="Save",
+    action_edit_title="Save title",
+    action_set_start="Start = current time",
+    action_set_end="End = current time",
+    action_select="Action",
+    action_overlap="Action intervals overlap. One second does not belong to two actions.",
+    action_crosses_block="The interval crosses a block boundary. It is not clipped.",
+    action_outside_block="The interval is not inside a role block. It is not clipped.",
+    action_invalid_interval="The interval must be half-open: the end is after the start.",
+    action_stale="The interval list is stale. The replacement was not saved.",
+    action_save_failed="The intervals were not saved.",
+    action_blocks_unfrozen=(
+        "Role blocks are not frozen. Intervals are accepted against the draft "
+        "and will be checked against the frozen split before training."
+    ),
+    action_coverage_missing="missing from training or validation",
+    action_coverage_hint=(
+        "Every seeded action should appear at least once in training and once in validation. "
+        "swing_loaded and swing_empty are different actions; label both swings."
+    ),
+    action_table_start="Start, s",
+    action_table_end="End, s",
+    action_table_duration="Duration, s",
+    action_table_action="Action",
+    action_table_role="Role",
+    action_shortcuts=(
+        "Keys: i sets the start, o sets the end, Enter adds, Delete removes, "
+        "1–9 picks an action, comma and period step one frame."
+    ),
+    action_snap_note=(
+        "The frame step is only on screen: the shown edge rounds to the frame-rate step. "
+        "The file stores the source seconds the server computed, not a frame number / fps."
+    ),
+    action_reload="Reload",
+    action_draft="draft",
+    action_no_video="This project has no video.",
+    action_step_catalog="Catalog",
+    action_step_labels="Intervals",
+    action_step_train="Training",
+    action_step_results="Results",
+    action_step_catalog_text="Add actions. The name is an English token. The title is stored as entered.",
+    action_step_labels_text=(
+        "Mark intervals under the player. One moment is one action, inside one role block."
+    ),
+    action_step_train_wait="Action classifier training is not connected on this screen yet.",
+    action_step_results_wait="Results and evaluation appear after training. There are none now.",
+    action_step_need_catalog="Fill in the action catalog first.",
+    action_step_train_text=(
+        "Check completed custom runs of one detector and one rate. "
+        "Start waits for the server readiness answer."
+    ),
+    action_step_results_text=(
+        "Model intervals, a comparison with train and validation labels, then evaluation. "
+        "The final-evaluation block opens only after its file is written."
+    ),
+    action_runs_heading="Analysis runs",
+    action_no_runs="There is no completed custom analysis run for this video.",
+    action_ready_heading="Readiness",
+    action_ready_ok="The selected runs can be sent to training.",
+    action_start="Start",
+    action_cancel="Cancel",
+    action_advanced="Advanced",
+    action_epochs="Epochs",
+    action_window_s="Window, s",
+    action_min_confidence="Min confidence",
+    action_min_duration="Min duration, s",
+    action_models_heading="Action models",
+    action_no_model="There is no action model yet.",
+    action_support_train="Train windows",
+    action_support_validation="Validation windows",
+    action_classes_scored="Classes in macro-F1",
+    action_selection_unstable="Too few validation windows: checkpoint selection is unreliable.",
+    action_selection_stable="Enough validation windows to select a checkpoint.",
+    action_infer_heading="Recognition",
+    action_other_detector="other detector",
+    action_infer_start="Run",
+    action_inferences_heading="Recognition jobs",
+    action_no_inference="There is no recognition yet.",
+    action_select_runs="Select at least one run.",
+    action_unknown_share="unknown share",
+    action_export_csv="Download CSV",
+    action_compare_heading="Labelled intervals",
+    action_test_hidden="final-evaluation block intervals stay hidden until the final check",
+    action_predicted_heading="Model intervals",
+    action_predicted_empty="There are no model intervals yet.",
+    action_evaluate_validation="Evaluate on the validation block",
+    action_evaluate_final="Final evaluation (test)",
+    action_final_once="The file is written once and is not changed again.",
+    action_eval_empty="There is no validation evaluation yet.",
+    action_precision="Precision",
+    action_recall="Recall",
+    action_f1="F1",
+    action_support_frames="Frames",
+    action_support_intervals="Intervals",
+    action_accuracy="Frame accuracy",
+    action_macro_f1="macro-F1",
+    action_evaluated_frames="Evaluated frames",
+    action_unlabelled_frames="Unlabelled frames",
+    action_unknown_rate="unknown rate",
+    action_mean_confidence="Mean confidence",
+    action_progress="Training progress",
+    action_no_chart="The curve appears after the first epoch.",
+    action_epoch="Epoch",
+    action_run_fps="fps",
+    job_already_running=(
+        "A job is already running in this workspace. "
+        "A new training or analysis run does not start "
+        "until the current one finishes or is cancelled."
+    ),
 )
 
 
@@ -1359,6 +2411,7 @@ def _check_catalogs(ru: Catalog, en: Catalog) -> None:
         en.page_training,
         en.page_analysis,
         en.page_quality,
+        en.page_actions,
         en.page_events,
     )
     if english_titles != (
@@ -1367,6 +2420,7 @@ def _check_catalogs(ru: Catalog, en: Catalog) -> None:
         "Training",
         "Analysis",
         "Quality",
+        "Actions",
         "Events",
     ):
         raise RuntimeError("English page titles drifted")
@@ -1429,8 +2483,49 @@ def _check_lookup() -> None:
         raise RuntimeError("catalog('en') did not return English")
 
 
+_ACTION_SEED_ORDER = (
+    "digging",
+    "swing_loaded",
+    "dumping",
+    "swing_empty",
+    "idle",
+)
+
+action_seed_titles: dict[str, dict[str, str]] = {
+    "ru": {
+        "digging": "Копание",
+        "swing_loaded": "Поворот с грузом",
+        "dumping": "Выгрузка",
+        "swing_empty": "Поворот порожняком",
+        "idle": "Простой",
+    },
+    "en": {
+        "digging": "Digging",
+        "swing_loaded": "Swing loaded",
+        "dumping": "Dumping",
+        "swing_empty": "Swing empty",
+        "idle": "Idle",
+    },
+}
+
+
+def _check_action_seed_titles() -> None:
+    ru_titles = action_seed_titles["ru"]
+    en_titles = action_seed_titles["en"]
+    if tuple(ru_titles) != _ACTION_SEED_ORDER or tuple(en_titles) != _ACTION_SEED_ORDER:
+        raise RuntimeError("action seed titles drifted")
+    for name in _ACTION_SEED_ORDER:
+        if (
+            not _has_cyrillic(ru_titles[name])
+            or _has_cyrillic(en_titles[name])
+            or ru_titles[name] == en_titles[name]
+        ):
+            raise RuntimeError(f"action seed title {name} locale drifted")
+
+
 _check_catalogs(RU, EN)
 _check_lookup()
+_check_action_seed_titles()
 
 NOT_CALCULATED = RU.not_calculated
 NOT_EVALUATED = RU.not_evaluated
@@ -1457,6 +2552,7 @@ PAGE_VIDEO = RU.page_video
 PAGE_DATA = RU.page_data
 PAGE_TRAINING = RU.page_training
 PAGE_ANALYSIS = RU.page_analysis
+PAGE_ACTIONS = RU.page_actions
 PAGE_EVENTS = RU.page_events
 PROJECT_LABEL = RU.project_label
 NO_PROJECT = RU.no_project
@@ -1538,6 +2634,18 @@ EPISODE_LABEL = RU.episode_label
 EPISODE_CONCURRENT = RU.episode_concurrent
 ADD_EPISODE = RU.add_episode
 EPISODE_ADDED = RU.episode_added
+DEFAULT_EPISODE_LABEL = RU.default_episode_label
+CUT_HERE = RU.cut_here
+CUT_HINT = RU.cut_hint
+CONCURRENT_PASS = RU.concurrent_pass
+REMOVE_CUT = RU.remove_cut
+SAVE_EPISODE_LABEL = RU.save_episode_label
+EPISODES_FROZEN_NOTE = RU.episodes_frozen_note
+FRAME_STEP_LABEL = RU.frame_step_label
+ARROW_FRAME_HINT = RU.arrow_frame_hint
+NUDGE_HINT = RU.nudge_hint
+EPISODES_SAVED = RU.episodes_saved
+EPISODES_SAVE_FAILED = RU.episodes_save_failed
 GUARDS_HEADING = RU.guards_heading
 GUARDS_EMPTY = RU.guards_empty
 SPLIT_HEADING = RU.split_heading
@@ -1704,6 +2812,10 @@ THEME_DARK = RU.theme_dark
 THEME_DISPLAY_ONLY = RU.theme_display_only
 THEME_WRITE_FAILED = RU.theme_write_failed
 PROJECT_WRITE_FAILED = RU.project_write_failed
+LABEL_PAGE_TITLE = RU.label_page_title
+LABEL_OPEN_APP = RU.label_open_app
+LABEL_LOADING = RU.label_loading
+LABEL_BACK_TO_DATA = RU.label_back_to_data
 
 PAGE_TITLES: tuple[str, ...] = RU.page_titles
 
@@ -1713,6 +2825,7 @@ PAGE_DESCRIPTIONS: dict[str, str] = {
     PAGE_TRAINING: catalog("ru").lead("training"),
     PAGE_ANALYSIS: catalog("ru").lead("analysis"),
     PAGE_QUALITY: catalog("ru").lead("quality"),
+    PAGE_ACTIONS: catalog("ru").lead("actions"),
     PAGE_EVENTS: catalog("ru").lead("events"),
 }
 

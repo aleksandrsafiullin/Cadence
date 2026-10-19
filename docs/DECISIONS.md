@@ -194,3 +194,49 @@ Streamlit left because the Video page could not be a real layout.
 The replacement is Starlette + Jinja2 + CSS + small JS.
 
 FastAPI, React, and a SPA bundler stay forbidden. Services and the worker lock stay.
+
+## Class catalog
+
+Date: 2026-10-13.
+
+Excavation stays the four seed classes in `configs/labels.yaml`: `excavator_body`, `bucket`, `haul_truck`, `truck_bed`. `load_labels()` reads that seed. It is not a project fallback. Other catalogs may hold 1 to 16 classes. Operator `title` and `box` are stored as given and are not translated.
+
+## Frame sampling without a full decode
+
+Date: 2026-10-15.
+
+Sampling a real 1271 s, 59.94 fps, 1080p clip decoded every frame of every role window twice (tick pass, then the rewrite pass). Measured on the pilot video, project `mvp`, diagnostic plan: one full decode pass over train+validation windows (45 555 + 14 985 ticks) took 302 s, so the old sampler cost about 604 s.
+
+The tick pass now demuxes packets only (`FrameReader.iterate_pts`). Each packet gives `pts`, `duration`, and `source_frame_index = (pts - start_pts) // duration`, the same formula the decoding reader uses. Nothing is decoded until a tick is chosen; then the writer seeks to the keyframe before that PTS and decodes forward until the matching frame. Same clip, same plan, after: tick pass 0.65 s + 0.22 s, whole `sample_frames` 31.8 s (80 keyframe-seek decodes). Tick lists are identical to the decode-based ones on the CFR fixture; selection, spacing and near-duplicate rules did not change.
+
+The demux pass refuses anything it cannot prove is a constant grid: missing `pts` or `duration`, a packet duration different from the first, a PTS off the grid. The refusal is `vfr_sampling_unsupported` and the sampler falls back to the decoding tick pass. `probe_is_cfr` (nominal and average fps within 1e-3) gates the attempt; a video without probe fps uses decode. Time is still `pts × time_base`; `frame_index / fps` is not used anywhere.
+
+`sample_manifest.json` rows now carry `source_pts` and `time_base` and the manifest carries `sample_schema_version: 2` and `decode_failed`. The global `schema_version` stays 1 because `VersionedModel` rejects any other value for every document. Legacy manifests without the new fields read back as version 1 with `null` pts. A tick that cannot be decoded is listed in `decode_failed` and counted as shortfall; no neighbour frame is substituted.
+
+## Analysis is bound to the four pilot class names
+
+Date: 2026-10-19.
+
+`Detection.class_name: DetectionClassName` still binds analysis to `excavator_body`, `bucket`, `haul_truck`, and `truck_bed`. A custom catalog cannot be analysed until that enum is opened. This note does not change the enum.
+
+## Action classifier in this MVP
+
+Date: 2026-10-19.
+
+The operator asked to train a temporal action model in this MVP. Spec §20 stays the rule-based event design (excavator state, bucket phase, truck state, unload candidates from observations) and is not implemented. The classifier is a separate model on human-labelled intervals. Training and inference accept only a custom detector run; a baseline origin is refused. Kept ranges are the train and validation blocks, so the test block is not read while training. A masked frame, a low confidence, or a short span is `unknown`. `unknown` is not a trained class.
+
+## `Detection.class_name` on this walk
+
+Date: 2026-10-19.
+
+Unchanged. See «Analysis is bound to the four pilot class names» above.
+
+## Walkthrough of project mvp
+
+Date: 2026-10-19.
+
+`mvp` has frozen blocks and 80 unlabelled frames (60 train, 20 validation, 0 reviewed, 0 test samples). Detection training and action training stay blocked until the operator labels frames. No quality claim.
+
+Subtask 10 measured analysis on a deleted copy: run A `[0, 120)` at 135 s and run B `[770, 840)` at 60 s, and said those runs should be repeated after a real train. That repeat is still pending. This walk did not train and did not start analysis on `mvp` or `pilot`.
+
+UI on `127.0.0.1:8519` (nothing was listening on 8517). Video `v_b91dd7f95a9d46a5ba8a442bbd6314f0`, the CAT 336 file, 1920×1080, 1271.084 s. The player loaded that media URL and advanced to 0.197 s; the failure alert stayed hidden. Stepper was on `/`, `/data`, `/label`, `/training`, and `/actions`. Blocks: train `[0, 760)`, validation `[770, 1020)`, test `[1030, 1271.084)`, with the 10 s gaps unassigned. The snapshot button was disabled with «Нет проверенных кадров в блоке обучения. Проверенных обучаемых: обучение 0, проверка 0.» Label frame 0 is that same video at 0.000 s; the next link is frame 720 of the same id. Training showed `dataset_not_ready` and the same sentence; no snapshot and no training job. Actions showed «Нет завершённого custom-прогона анализа для этого видео.» and «Модели действий ещё нет.» Both start controls were disabled. `workspace/ui/project.txt` was restored to `pilot`.

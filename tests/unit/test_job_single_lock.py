@@ -8,6 +8,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -15,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from excavation_lab import jobs, storage
+from excavation_lab.datasets.catalog import list_catalogs
 from excavation_lab.errors import JobAlreadyRunningError, LabError
 from excavation_lab.schemas import JobStatus
 
@@ -72,7 +74,8 @@ def _track(stop_pids: list[int], pid: int | None) -> int:
 def _workspace(tmp_path: Path, *names: str) -> Path:
     root = tmp_path / "workspace"
     for name in names:
-        storage.create_project(name, root)
+        list_catalogs(root)
+        storage.create_project(name, root, catalog_id="excavation")
     return root
 
 
@@ -232,6 +235,7 @@ def test_cancel_keeps_last_timestamp_and_spares_other_processes(
     monkeypatch.setattr(jobs.os, "kill", spy)
     done = jobs.request_cancel(workspace, "alpha", job.job_id)
     progress = json.loads((run_dir / jobs.PROGRESS_FILENAME).read_text(encoding="utf-8"))
+    assert progress["status"] == "cancelled"
     frames = progress["frames"]
     assert isinstance(frames, list)
     last = frames[-1]["source_time_s"]
@@ -379,6 +383,13 @@ def test_reopen_marks_dead_running_job_orphaned(
     stored = _project_status(workspace, "alpha", job.job_id)
     assert stored["status"] == "failed"
     assert stored["error_code"] == "orphaned"
+    progress = json.loads(
+        (jobs.run_directory(workspace, "alpha", job.job_id) / jobs.PROGRESS_FILENAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert progress["status"] == "failed"
+    assert progress["error"] == "orphaned"
     again = jobs.reopen(workspace)
     assert [item.job_id for item in again] == [job.job_id]
     assert again[0].status is JobStatus.failed
@@ -467,3 +478,125 @@ def test_interrupted_writer_never_leaves_partial_json(tmp_path: Path) -> None:
         if process.poll() is None:
             process.kill()
             process.wait(timeout=5)
+
+
+def test_mark_failed_and_cancel_keep_prior_progress_fields(
+    tmp_path: Path,
+    stop_pids: list[int],
+) -> None:
+    workspace = _workspace(tmp_path, "alpha")
+    failed_job = jobs.start_job(workspace, "alpha", kind="analyze")
+    failed_pid = _track(stop_pids, failed_job.pid)
+    os.kill(failed_pid, signal.SIGKILL)
+    os.waitpid(failed_pid, 0)
+    failed_dir = jobs.run_directory(workspace, "alpha", failed_job.job_id)
+    jobs.write_progress(
+        failed_dir,
+        {
+            "job_id": failed_job.job_id,
+            "analyzed_end_s": 2.5,
+            "frames": [{"source_time_s": 2.5}],
+        },
+    )
+    recorded = jobs.mark_failed(workspace, "alpha", failed_job.job_id, "backend_failed")
+    assert recorded.status is JobStatus.failed
+    failed_progress = json.loads((failed_dir / jobs.PROGRESS_FILENAME).read_text(encoding="utf-8"))
+    assert failed_progress["status"] == "failed"
+    assert failed_progress["error"] == "backend_failed"
+    assert failed_progress["job_id"] == failed_job.job_id
+    assert failed_progress["analyzed_end_s"] == 2.5
+    assert failed_progress["frames"][-1]["source_time_s"] == 2.5
+
+    cancelled_job = jobs.start_job(workspace, "alpha", kind="analyze")
+    cancelled_pid = _track(stop_pids, cancelled_job.pid)
+    os.kill(cancelled_pid, signal.SIGKILL)
+    os.waitpid(cancelled_pid, 0)
+    cancelled_dir = jobs.run_directory(workspace, "alpha", cancelled_job.job_id)
+    jobs.write_progress(
+        cancelled_dir,
+        {"job_id": cancelled_job.job_id, "frames": [{"source_time_s": 1.0}]},
+    )
+    done = jobs.request_cancel(workspace, "alpha", cancelled_job.job_id)
+    assert done.status is JobStatus.cancelled
+    cancelled_progress = json.loads(
+        (cancelled_dir / jobs.PROGRESS_FILENAME).read_text(encoding="utf-8")
+    )
+    assert cancelled_progress["status"] == "cancelled"
+    assert cancelled_progress["job_id"] == cancelled_job.job_id
+    assert cancelled_progress["frames"][-1]["source_time_s"] == 1.0
+    assert "error" not in cancelled_progress
+
+
+def test_completed_progress_stays_completed_after_cancel_and_fail(
+    tmp_path: Path,
+    stop_pids: list[int],
+) -> None:
+    from excavation_lab.models.train import _fail
+
+    workspace = _workspace(tmp_path, "alpha")
+    job = jobs.start_job(workspace, "alpha", kind="train")
+    pid = _track(stop_pids, job.pid)
+    os.kill(pid, signal.SIGKILL)
+    os.waitpid(pid, 0)
+    run_dir = jobs.run_directory(workspace, "alpha", job.job_id)
+    jobs.write_progress(
+        run_dir,
+        {
+            "job_id": job.job_id,
+            "status": JobStatus.completed.value,
+            "epoch": 2,
+            "run_test": False,
+        },
+    )
+    before = (run_dir / jobs.PROGRESS_FILENAME).read_bytes()
+    done = jobs.request_cancel(workspace, "alpha", job.job_id)
+    assert done.status is JobStatus.cancelled
+    _fail(workspace, "alpha", job.job_id, run_dir, "late_exception")
+    stored = json.loads((run_dir / jobs.PROGRESS_FILENAME).read_text(encoding="utf-8"))
+    assert stored["status"] == JobStatus.completed.value
+    assert stored["job_id"] == job.job_id
+    assert stored["epoch"] == 2
+    assert stored["run_test"] is False
+    assert "error" not in stored
+    assert (run_dir / jobs.PROGRESS_FILENAME).read_bytes() == before
+
+
+def test_downgrade_rechecks_under_the_lock_and_keeps_completed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A completed replace injected after the rank read must survive the replace."""
+    run_dir = tmp_path / "run"
+    jobs.write_progress(run_dir, {"status": JobStatus.running.value, "epoch": 1})
+    path = run_dir / jobs.PROGRESS_FILENAME
+    entered = threading.Event()
+    release = threading.Event()
+
+    def pause(target: Path, incoming: object) -> None:
+        if not isinstance(incoming, dict) or incoming.get("status") != JobStatus.failed.value:
+            return
+        entered.set()
+        assert release.wait(5)
+        target.write_text(
+            json.dumps({"status": JobStatus.completed.value, "epoch": 4, "job_id": "kept"}),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(jobs, "_pause_progress_replace", pause)
+    worker = threading.Thread(
+        target=jobs.write_progress,
+        args=(run_dir, {"status": JobStatus.failed.value, "error": "late", "epoch": 1}),
+    )
+    worker.start()
+    assert entered.wait(5)
+    release.set()
+    worker.join(5)
+    assert not worker.is_alive()
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    assert stored == {"status": JobStatus.completed.value, "epoch": 4, "job_id": "kept"}
+    jobs.write_progress(run_dir, {"status": JobStatus.running.value, "epoch": 9})
+    jobs.write_progress(run_dir, {"epoch": 9, "frames": [{"source_time_s": 1.0}]})
+    again = json.loads(path.read_text(encoding="utf-8"))
+    assert again["status"] == JobStatus.completed.value
+    assert again["epoch"] == 4
+    assert "frames" not in again

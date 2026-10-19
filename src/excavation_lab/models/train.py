@@ -13,6 +13,19 @@ them and sends the off switch (``aug_config={}``, ``scale_jitter=False``,
 the last layer. A failed device is written onto the job row. Training is not
 started again on CPU.
 
+When a local pretrain file is already in the workspace cache, the worker
+rewrites it to ``class_head.pth`` in the run directory and passes that path
+as ``pretrain_weights`` with ``num_classes`` equal to the catalog length.
+The module RF-DETR builds inside ``train`` then loads the same width, so
+``_resize_linear`` does not repeat or truncate rows. ``class_head.pth`` is
+an input to that call. ``publish_train_bundle`` still publishes the finished
+``weights.pth`` and is what marks a bundle custom.
+
+Before ``model.train``, ``SetCriterion.loss_labels`` is wrapped so an
+unsupervised class column is zeroed on ``pos_weights`` and ``neg_weights``
+before that method reduces them. The original method is put back when
+``model.train`` returns. ``run_test`` stays false.
+
 ``overfit`` is a data and class-wiring check on 20–40 reviewed frames that
 ``require_frozen`` assigns to train. Its metrics are ``diagnostic_overfit``.
 They are not a test score. A finished run writes ``models/<profile>-<job_id>/``.
@@ -34,20 +47,32 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
 
+from excavation_lab.datasets.blocks import assignment_at as role_at
+from excavation_lab.datasets.catalog import require_project_catalog
 from excavation_lab.datasets.coco_import import ImportedFrame, load_imported_frames
 from excavation_lab.datasets.splits import FrozenSplit, require_frozen
 from excavation_lab.errors import LabError
+from excavation_lab.hardware import weights_cache_dir
 from excavation_lab.jobs import (
+    PROGRESS_FILENAME,
     get_job,
     mark_completed,
     mark_failed,
     start_job,
     worker_job,
+    write_progress,
 )
 from excavation_lab.models.augment import library_off_switch
 from excavation_lab.models.bundle import publish_train_bundle
+from excavation_lab.models.class_head import rewrite_class_head
+from excavation_lab.models.supervision import (
+    catalog_class_names,
+    observe_unsupervised,
+    wrap_loss_labels,
+)
 from excavation_lab.models.train_config import (
     METRIC_ROLE_DIAGNOSTIC_OVERFIT,
+    METRIC_ROLE_SYNTHETIC_WIRING,
     _installed_train_api,
     resolve_train_profile,
     write_resolved_train_config,
@@ -74,7 +99,12 @@ OVERFIT_OUTPUT_NAME = "output.json"
 _PROFILES = frozenset({PROFILE_SMOKE, PROFILE_PILOT_SMALL, PROFILE_OVERFIT})
 _DEVICES = frozenset({"auto", "cuda", "mps", "cpu"})
 _EXPLICIT_DEVICES = frozenset({"cuda", "mps", "cpu"})
-_FAKE_MODES = frozenset({"hold", "empty", "fail", "metrics"})
+_FAKE_MODES = frozenset({"hold", "empty", "fail", "metrics", "reload"})
+_OFFICIAL_WEIGHTS = {
+    "nano": "rf-detr-nano.pth",
+    "small": "rf-detr-small.pth",
+}
+CLASS_HEAD_NAME = "class_head.pth"
 _PROJECT_AUGMENT_KEYS = frozenset({"augmentation_train", "augmentation_eval"})
 _VAL_MAP_KEYS = ("val/mAP_50_95", "val/map_50_95", "validation/mAP_50_95")
 _BUCKET_KEYS = ("val/AP/bucket", "val/ap/bucket")
@@ -248,6 +278,14 @@ def _execute(
             output_dir=run_dir,
             device=device,
         )
+        _prepare_class_head(workspace, project_id, run_dir, resolved, payload)
+        _note_progress(
+            run_dir,
+            job_id=job_id,
+            status=JobStatus.running.value,
+            profile=str(profile),
+            device=device,
+        )
         train_fn = trainer if trainer is not None else _trainer_for_request(
             request,
             resolved,
@@ -268,7 +306,9 @@ def _execute(
             reported if isinstance(reported, Mapping) else None,
             validation_images=validation_images,
         )
-        if frames is not None:
+        if isinstance(reported, Mapping) and reported.get("synthetic") is True:
+            metrics = _label_synthetic_metrics(metrics)
+        elif frames is not None:
             metrics = _label_overfit_metrics(metrics)
             _atomic_json(run_dir / OVERFIT_OUTPUT_NAME, _overfit_output(metrics, frames))
         _atomic_json(run_dir / "validation_metrics.json", metrics)
@@ -291,6 +331,13 @@ def _execute(
             project_id,
             job_id,
             [weights, bundle / "checksums.json", bundle / "weights.pth"],
+        )
+        _note_progress(
+            run_dir,
+            job_id=job_id,
+            status=JobStatus.completed.value,
+            profile=str(profile),
+            device=device,
         )
         _append_log(run_dir, f"checkpoint={weights.name}")
         _append_log(run_dir, f"bundle={bundle.name}")
@@ -339,6 +386,54 @@ def _call_payload(
     return payload
 
 
+def _prepare_class_head(
+    workspace: Path,
+    project_id: str,
+    run_dir: Path,
+    resolved: Any,
+    payload: dict[str, Any],
+) -> None:
+    """Point the constructor at a catalog-width copy of the local pretrain file.
+
+    No local file means this does not download weights. The library trainer
+    still receives ``run_test=False``. The rewritten file is not a published
+    bundle.
+    """
+    variant = resolved.constructor.get("variant")
+    source = _local_pretrain_file(workspace, variant)
+    if source is None:
+        return
+    names = _catalog_names(workspace, project_id)
+    destination = run_dir / CLASS_HEAD_NAME
+    rewrite_class_head(source, destination, names, workspace=workspace)
+    payload["pretrain_weights"] = os.fspath(destination.resolve())
+    payload["num_classes"] = len(names)
+
+
+def _local_pretrain_file(workspace: Path, variant: object) -> Path | None:
+    if not isinstance(variant, str):
+        return None
+    filename = _OFFICIAL_WEIGHTS.get(variant)
+    if filename is None:
+        return None
+    path = weights_cache_dir(workspace) / filename
+    if path.is_symlink() or not path.is_file():
+        return None
+    return path
+
+
+def _constructor_kwargs(resolved: Any, payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Model constructor kwargs. ``num_classes`` is the catalog length."""
+    constructor = dict(resolved.constructor_kwargs())
+    pretrain = payload.get("pretrain_weights")
+    if isinstance(pretrain, str) and pretrain:
+        constructor["pretrain_weights"] = pretrain
+    class_count = payload.get("num_classes")
+    if isinstance(class_count, int) and not isinstance(class_count, bool):
+        constructor["num_classes"] = class_count
+    return constructor
+
+
 def _library_kwargs(payload: Mapping[str, Any]) -> dict[str, Any]:
     """``model.train`` kwargs. Project augmentation names are omitted."""
     fields = _installed_train_api().train_fields
@@ -366,13 +461,17 @@ def _trainer_for_request(
     if not isinstance(mode, str) or not mode:
         mode = os.environ.get(FAKE_TRAINER_ENV)
     if not mode:
-        return _library_trainer_for(resolved)
+        return _library_trainer_for(resolved, workspace, project_id)
     if mode not in _FAKE_MODES:
         raise LabError("invalid_job", f"Неизвестный тестовый trainer: {mode}")
     return _fake_trainer(mode, workspace, project_id, job_id)
 
 
-def _library_trainer_for(resolved: Any) -> TrainFn:
+def _catalog_names(workspace: Path, project_id: str) -> list[str]:
+    return catalog_class_names(require_project_catalog(workspace, project_id))
+
+
+def _library_trainer_for(resolved: Any, workspace: Path, project_id: str) -> TrainFn:
     def _call(**kwargs: Any) -> dict[str, Any] | None:
         _reject_unit_test_train()
         from rfdetr import RFDETRNano, RFDETRSmall
@@ -385,8 +484,10 @@ def _library_trainer_for(resolved: Any) -> TrainFn:
                 "rfdetr_variant",
                 f"Нет конструктора RF-DETR для класса {class_name}.",
             )
-        model = cls(device=str(kwargs["device"]), **resolved.constructor_kwargs())
-        model.train(**_library_kwargs(kwargs))
+        model = cls(device=str(kwargs["device"]), **_constructor_kwargs(resolved, kwargs))
+        names = _catalog_names(workspace, project_id)
+        with wrap_loss_labels(Path(kwargs["dataset_dir"]), names):
+            model.train(**_library_kwargs(kwargs))
         return _read_library_metrics(Path(kwargs["output_dir"]))
 
     return _call
@@ -405,8 +506,10 @@ def _fake_trainer(
 ) -> TrainFn:
     def _call(**kwargs: Any) -> dict[str, Any] | None:
         output_dir = Path(kwargs["output_dir"])
-        opened = _opened_paths(Path(kwargs["dataset_dir"]))
-        _append_trainer_call(output_dir, kwargs, opened)
+        dataset_dir = Path(kwargs["dataset_dir"])
+        opened = _opened_paths(dataset_dir)
+        seen = observe_unsupervised(dataset_dir, _catalog_names(workspace, project_id))
+        _append_trainer_call(output_dir, kwargs, opened, seen)
         if mode == "hold":
             _hold(workspace, project_id, job_id)
             raise _WorkerStopped()
@@ -414,6 +517,12 @@ def _fake_trainer(
             raise RuntimeError("mps backend failed: simulated")
         if mode == "metrics":
             (output_dir / "weights.pth").write_bytes(b"checkpoint")
+        if mode == "reload":
+            _write_reloadable_checkpoint(output_dir, workspace, project_id)
+            return {
+                "synthetic": True,
+                "metric_role": METRIC_ROLE_SYNTHETIC_WIRING,
+            }
         return {
             "val/mAP_50_95": 0.5,
             "test/mAP_50_95": 0.125,
@@ -460,6 +569,7 @@ def _append_trainer_call(
     output_dir: Path,
     payload: Mapping[str, Any],
     opened: list[str],
+    supervision_seen: list[dict[str, Any]],
 ) -> None:
     path = output_dir / "trainer_calls.json"
     calls: list[Any] = []
@@ -473,6 +583,7 @@ def _append_trainer_call(
             "kwargs": recorded,
             "opened": opened,
             "model_constructed": False,
+            "supervision_seen": supervision_seen,
         }
     )
     _atomic_json(path, calls)
@@ -627,6 +738,17 @@ def _overfit_view(
     return view
 
 
+def _label_synthetic_metrics(metrics: Mapping[str, Any]) -> dict[str, Any]:
+    """Wiring-run metrics. Numbers from the double are not measurements."""
+    labeled = dict(metrics)
+    labeled["synthetic"] = True
+    labeled["metric_role"] = METRIC_ROLE_SYNTHETIC_WIRING
+    labeled["box_map_50_95"] = None
+    labeled["bucket_ap"] = None
+    labeled.pop("quality_claim", None)
+    return labeled
+
+
 def _label_overfit_metrics(metrics: Mapping[str, Any]) -> dict[str, Any]:
     labeled = dict(metrics)
     labeled["metric_role"] = METRIC_ROLE_DIAGNOSTIC_OVERFIT
@@ -749,29 +871,7 @@ def _frozen_role(
     if frozen is None:
         frozen = require_frozen(workspace, project_id, frame.video_id)
         cache[frame.video_id] = frozen
-    if frame.episode_id:
-        matches = [
-            episode for episode in frozen.episodes if episode.episode_id == frame.episode_id
-        ]
-        if len(matches) != 1:
-            return None
-        return matches[0].split.value
-    splits = {
-        episode.split.value
-        for episode in frozen.episodes
-        if episode.start_s <= frame.source_time_s < episode.end_s
-    }
-    if len(splits) > 1:
-        raise LabError("episode_overlap", "В одной точке времени разные split.")
-    if len(splits) == 1:
-        return next(iter(splits))
-    for guard in frozen.guards:
-        if guard.start_s <= frame.source_time_s < guard.end_s:
-            return guard.role
-    for block in frozen.blocks:
-        if block.start_s <= frame.source_time_s < block.end_s:
-            return block.role
-    return None
+    return role_at(frozen.blocks, frame.source_time_s)
 
 
 def _reject_unless_reviewed_train(
@@ -981,6 +1081,61 @@ def _wait_until_running(workspace: Path, project_id: str, job_id: str) -> bool:
     return False
 
 
+def _note_progress(run_dir: Path, **fields: object) -> None:
+    """Merge one progress object. ``run_test`` stays false on every write."""
+    current: dict[str, Any] = {}
+    path = run_dir / PROGRESS_FILENAME
+    if path.is_file() and not path.is_symlink():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            loaded = None
+        if isinstance(loaded, dict):
+            current = loaded
+    current.update(fields)
+    current["run_test"] = False
+    write_progress(run_dir, current)
+
+
+def _write_reloadable_checkpoint(
+    output_dir: Path,
+    workspace: Path,
+    project_id: str,
+) -> None:
+    """Metadata-only ``weights.pth`` the bundle loader can open.
+
+    The bytes are not a trained network. They carry the catalog class order
+    and the resolved variant and resolution so ``load_bundle`` can check them.
+    """
+    import torch
+
+    document = json.loads(
+        (output_dir / "resolved_train_config.json").read_text(encoding="utf-8")
+    )
+    constructor = document.get("constructor")
+    if not isinstance(constructor, dict):
+        constructor = {}
+    variant = constructor.get("variant")
+    resolution = constructor.get("resolution")
+    if variant not in {"nano", "small"}:
+        raise LabError("rfdetr_variant", "Тестовый чекпоинт не знает вариант профиля.")
+    if isinstance(resolution, bool) or not isinstance(resolution, int) or resolution <= 0:
+        raise LabError("resolution_missing", "Тестовый чекпоинт не знает разрешение профиля.")
+    names = _catalog_names(workspace, project_id)
+    model_name = "RFDETRNano" if variant == "nano" else "RFDETRSmall"
+    torch.save(
+        {
+            "model": {"probe": torch.zeros(1)},
+            "args": {"class_names": list(names), "num_classes": len(names)},
+            "model_name": model_name,
+            "model_config": {"resolution": resolution},
+            "synthetic": True,
+            "metric_role": METRIC_ROLE_SYNTHETIC_WIRING,
+        },
+        output_dir / "weights.pth",
+    )
+
+
 def _fail(
     workspace: Path,
     project_id: str,
@@ -989,6 +1144,7 @@ def _fail(
     code: str,
 ) -> None:
     _append_log(run_dir, f"failed {code}")
+    _note_progress(run_dir, job_id=job_id, status=JobStatus.failed.value, error=code)
     mark_failed(workspace, project_id, job_id, code)
 
 

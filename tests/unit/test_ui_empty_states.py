@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 from starlette.testclient import TestClient
 
+from excavation_lab.datasets.catalog import list_catalogs
 from excavation_lab.models.quality import load_quality_report
 from excavation_lab.storage import create_project
 from excavation_lab.ui import (
@@ -159,10 +160,18 @@ def test_empty_workspace_page(path: str, page_id: str, title: str, tmp_path: Pat
         assert 'action="/video/choose"' not in text
     if page_id == "events":
         assert "недоступен" in text
+    if page_id == "data":
+        assert book.label_counts_this_video in text
+        assert book.label_counts_project in text
+        assert book.label_counts_snapshot in text
+        assert book.snapshot_gate_scope in text
+        assert book.not_calculated in text
+        assert f"{book.count_reviewed}: 0" not in text
 
 
 def test_quality_page_without_metrics_json_has_no_zero_chart(tmp_path: Path) -> None:
-    create_project("pilot", tmp_path)
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
     book = ui_copy.catalog("ru")
     with TestClient(create_app(tmp_path)) as client:
         response = client.get("/quality")
@@ -174,7 +183,9 @@ def test_quality_page_without_metrics_json_has_no_zero_chart(tmp_path: Path) -> 
     assert ui_copy.QUALITY_EMPTY in text
     assert ui_copy.NOT_CALCULATED in text
     assert 'value="pilot"' in text
-    assert len(re.findall(r"<select\b", text)) == 1
+    main = re.search(r"<main\b[^>]*>(.*)</main>", text, re.DOTALL)
+    assert main is not None
+    assert "<select" not in main.group(1)
     metrics = re.findall(
         r'<div class="lab-metric">\s*<span>([^<]*)</span>\s*<b>([^<]*)</b>\s*</div>',
         text,
@@ -206,7 +217,8 @@ def test_quality_page_without_metrics_json_has_no_zero_chart(tmp_path: Path) -> 
 
 
 def test_project_without_video_still_asks_for_a_local_path(tmp_path: Path) -> None:
-    create_project("pilot", tmp_path)
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
     with TestClient(create_app(tmp_path)) as client:
         response = client.get("/")
     assert response.status_code == 200

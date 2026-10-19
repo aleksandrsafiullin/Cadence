@@ -12,8 +12,11 @@ Decode and encode timings stay null until those stages are wrapped.
 The parent enqueues a job and does not construct a detector. The child
 opened by ``jobs`` loads the model. After ``predict``, ``suppress`` keeps
 every cross-class box, then one ``TrackingSession`` runs class-split
-vehicle ByteTrack and namespaces track ids. ``BucketAssociator`` and
-``BedTruckAssociator`` run on that same frame, after the session update.
+vehicle ByteTrack and namespaces track ids. ``BucketAssociator`` runs
+after the session update when the catalog name set contains both
+``bucket`` and ``excavator_body``. ``BedTruckAssociator`` runs when it
+contains both ``truck_bed`` and ``haul_truck``. Any other set, including
+``baseline_coco``, does not open those tracks.
 An empty detector result is a frame row with no boxes. A predicted bucket
 dash is not one of those boxes, and a bed link does not add one either.
 Observation states run after both associators. A predicted box stays on
@@ -27,7 +30,7 @@ import json
 import math
 import os
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -36,6 +39,7 @@ from typing import Any, Protocol
 from numpy.typing import NDArray
 from pydantic import ValidationError
 
+from excavation_lab.datasets.catalog import require_project_catalog
 from excavation_lab.errors import (
     CheckpointMissingError,
     LabError,
@@ -67,17 +71,19 @@ from excavation_lab.schemas import (
 )
 from excavation_lab.storage import (
     VideoRecord,
-    connect,
     get_video,
     insert_analysis_run,
-    project_directory,
     project_sqlite,
+    recorded_model_directory,
 )
 from excavation_lab.tracking.bed import BedFrame
 from excavation_lab.tracking.bucket import BucketFrame
 from excavation_lab.tracking.export_tables import (
     DETECTIONS_COLUMNS,
+    DETECTIONS_NAME,
     FRAME_STATUS_COLUMNS,
+    FRAME_STATUS_NAME,
+    TRACK_STATES_NAME,
     AnalysisTableWriter,
     track_state_record,
     write_analysis_tables,
@@ -163,6 +169,7 @@ class AnalyzePipeline:
         on_recorded: Callable[[float], None] | None = None,
         vehicles: VehicleTrackers | None = None,
         same_class_nms_iou: float | None = None,
+        class_names: Collection[str] | None = None,
     ) -> None:
         self.reader = reader
         self.detector = detector
@@ -186,6 +193,7 @@ class AnalyzePipeline:
             video_id=None,
             view_id=view_id,
             vehicles=self.vehicles,
+            class_names=class_names,
         )
         self.states = ObservationLedger(
             detection_floor=self.vehicles.detection_floor,
@@ -377,22 +385,29 @@ class AnalyzePipeline:
         )
         # After the session update. ``last_positions`` is already this
         # frame only; the associator copies what it needs for the next one.
-        self._bucket_frame = self.session.bucket.update(
-            detections,
-            bodies=self.session.positions_for(EXCAVATOR_BODY),
-            source_time_s=stamp,
-            run_id=self.run_id,
-            video_id=frame.video_id,
-            view_id=self.view_id,
-        )
-        self._bed_frame = self.session.bed.update(
-            detections,
-            trucks=self.session.positions_for(HAUL_TRUCK),
-            source_time_s=stamp,
-            run_id=self.run_id,
-            video_id=frame.video_id,
-            view_id=self.view_id,
-        )
+        # A catalog without the pair does not run, so no track is opened.
+        if self.session.bucket.enabled():
+            self._bucket_frame = self.session.bucket.update(
+                detections,
+                bodies=self.session.positions_for(EXCAVATOR_BODY),
+                source_time_s=stamp,
+                run_id=self.run_id,
+                video_id=frame.video_id,
+                view_id=self.view_id,
+            )
+        else:
+            self._bucket_frame = None
+        if self.session.bed.enabled():
+            self._bed_frame = self.session.bed.update(
+                detections,
+                trucks=self.session.positions_for(HAUL_TRUCK),
+                source_time_s=stamp,
+                run_id=self.run_id,
+                video_id=frame.video_id,
+                view_id=self.view_id,
+            )
+        else:
+            self._bed_frame = None
         self._frame_states = self.states.observe(
             detections,
             tracked_rows=self._tracked_rows,
@@ -544,6 +559,10 @@ def run_analyze_job(
         video = get_video(root, project_id, request["video_id"])
         _require_media(video)
         origin, bundle = resolve_model(root, project_id, request["model_id"])
+        catalog = require_project_catalog(root, project_id)
+        rule_names: frozenset[str] = frozenset()
+        if origin != CheckpointOrigin.baseline_coco.value:
+            rule_names = frozenset(item.name for item in catalog.classes)
         if detector is None:
             opened = open_analysis_detector(origin, bundle)
             detector = opened
@@ -562,6 +581,7 @@ def run_analyze_job(
             reset_reason=request["reset_reason"],
             on_recorded=_progress(root, project_id, job_id, run_dir, _duration_s(video)),
             vehicles=_vehicles_for(request),
+            class_names=rule_names,
         )
         _apply_display(pipeline, request.get("display_threshold"))
         frame_path, detection_path, track_path = pipeline.run()
@@ -595,6 +615,39 @@ def run_analyze_job(
     finally:
         if opened is not None:
             opened.close()
+
+
+@dataclass(frozen=True, slots=True)
+class RunTables:
+    """The three parquet files of one analysis run."""
+
+    frame_status: Path
+    detections: Path
+    track_states: Path
+
+
+def run_tables(run_dir: Path) -> RunTables:
+    """Paths of ``frame_status``, ``detections``, and ``track_states``.
+
+    Any missing file raises ``LabError`` with code ``run_incomplete``.
+    """
+    directory = Path(run_dir)
+    tables = RunTables(
+        frame_status=directory / FRAME_STATUS_NAME,
+        detections=directory / DETECTIONS_NAME,
+        track_states=directory / TRACK_STATES_NAME,
+    )
+    missing = [
+        path.name
+        for path in (tables.frame_status, tables.detections, tables.track_states)
+        if not path.is_file()
+    ]
+    if missing:
+        raise LabError(
+            "run_incomplete",
+            "В прогоне нет таблиц: " + ", ".join(missing) + ".",
+        )
+    return tables
 
 
 def resolve_model(
@@ -939,28 +992,10 @@ def _tick_not_after(timestamp: float, step: Fraction) -> Fraction:
 
 
 def _bundle_directory(workspace: Path, project_id: str, model_id: str) -> Path:
-    candidate = project_directory(workspace, project_id) / "models" / model_id
-    if candidate.is_dir() and not candidate.is_symlink():
-        return candidate
-    recorded = _recorded_model_path(workspace, project_id, model_id)
+    recorded = recorded_model_directory(workspace, project_id, model_id)
     if recorded is not None and recorded.is_dir() and not recorded.is_symlink():
         return recorded
     raise CheckpointMissingError(model_id)
-
-
-def _recorded_model_path(workspace: Path, project_id: str, model_id: str) -> Path | None:
-    db_path = project_sqlite(workspace, project_id)
-    with connect(db_path) as connection:
-        row = connection.execute(
-            """
-            SELECT path FROM model_versions
-            WHERE project_id = ? AND model_id = ?
-            """,
-            (project_id, model_id),
-        ).fetchone()
-    if row is None or not isinstance(row["path"], str):
-        return None
-    return Path(row["path"])
 
 
 def _read_request(run_dir: Path) -> dict[str, Any]:

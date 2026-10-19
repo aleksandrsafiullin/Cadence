@@ -5,22 +5,41 @@ Synthetic frames. They check review rules, not pit-video accuracy.
 
 from __future__ import annotations
 
+import inspect
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
+from excavation_lab.datasets.catalog import (
+    add_class,
+    catalog_from_seed,
+    copy_catalog,
+    list_catalogs,
+)
+from excavation_lab.datasets.coco_import import build_class_mapping
 from excavation_lab.datasets.labels import (
     LabelRecord,
     LabelState,
     lookup_class,
     validate_frame,
 )
-from excavation_lab.errors import UnknownCategoryError, UnsupportedCrowdError
+from excavation_lab.errors import LabError, UnknownCategoryError, UnsupportedCrowdError
 from excavation_lab.schemas import ReviewStatus, Visibility, labels_path, repo_root
+
+_EXCAVATION = catalog_from_seed()
+
+
+def _validate(frame: object):
+    return validate_frame(frame, _EXCAVATION)
+
+
+def _lookup(name: str, *, frame_id: str | None = None):
+    return lookup_class(name, _EXCAVATION, frame_id=frame_id)
 
 
 def test_reviewed_frame_with_zero_boxes_is_reviewed_empty() -> None:
-    record = validate_frame(_frame(review_status="reviewed", boxes=[]))
+    record = _validate(_frame(review_status="reviewed", boxes=[]))
     assert record.label_state is LabelState.reviewed_empty
     assert record.label_state.value == "reviewed_empty"
     assert record.review_status is ReviewStatus.reviewed
@@ -30,7 +49,7 @@ def test_reviewed_frame_with_zero_boxes_is_reviewed_empty() -> None:
 
 
 def test_unreviewed_frame_with_zero_boxes_is_not_a_negative() -> None:
-    record = validate_frame(_frame(review_status="unreviewed", boxes=[]))
+    record = _validate(_frame(review_status="unreviewed", boxes=[]))
     assert record.label_state is LabelState.unreviewed
     assert record.review_status is ReviewStatus.unreviewed
     assert record.boxes == []
@@ -38,7 +57,7 @@ def test_unreviewed_frame_with_zero_boxes_is_not_a_negative() -> None:
     assert record.trainable is False
     assert record.label_state is not LabelState.reviewed_empty
 
-    with_box = validate_frame(
+    with_box = _validate(
         _frame(
             review_status="unreviewed",
             boxes=[_box("haul_truck")],
@@ -51,7 +70,7 @@ def test_unreviewed_frame_with_zero_boxes_is_not_a_negative() -> None:
 
 
 def test_excluded_frame_is_stored_and_not_trainable() -> None:
-    record = validate_frame(
+    record = _validate(
         _frame(
             review_status="excluded",
             note="пыль закрывает забой",
@@ -66,7 +85,7 @@ def test_excluded_frame_is_stored_and_not_trainable() -> None:
     assert len(record.boxes) == 1
     assert record.note == "пыль закрывает забой"
 
-    empty = validate_frame(_frame(review_status="excluded", boxes=[]))
+    empty = _validate(_frame(review_status="excluded", boxes=[]))
     assert empty.label_state is LabelState.excluded
     assert empty.label_state is not LabelState.reviewed_empty
     assert empty.is_negative is False
@@ -75,12 +94,12 @@ def test_excluded_frame_is_stored_and_not_trainable() -> None:
 
 
 def test_unknown_category_dump_is_not_mapped_to_bucket_or_class_zero() -> None:
-    assert lookup_class("excavator_body").id == 0
-    assert lookup_class("bucket").id == 1
-    assert lookup_class("bucket").name.value == "bucket"
+    assert _lookup("excavator_body").id == 0
+    assert _lookup("bucket").id == 1
+    assert _lookup("bucket").name == "bucket"
 
     with pytest.raises(UnknownCategoryError) as caught:
-        lookup_class("dump", frame_id="pit:4")
+        _lookup("dump", frame_id="pit:4")
     error = caught.value
     assert isinstance(error, UnknownCategoryError)
     assert error.code == "unknown_category"
@@ -92,7 +111,7 @@ def test_unknown_category_dump_is_not_mapped_to_bucket_or_class_zero() -> None:
     assert "pit:4" in error.message
 
     with pytest.raises(UnknownCategoryError) as from_frame:
-        validate_frame(
+        _validate(
             _frame(
                 boxes=[
                     _box("dump", category_id=0, x1=1, y1=1, x2=8, y2=8),
@@ -112,7 +131,7 @@ def test_class_lookup_by_name_uses_labels_yaml() -> None:
     assert path == repo_root() / "configs" / "labels.yaml"
     assert path.is_file()
     found = {
-        lookup_class(name).name.value: lookup_class(name).id
+        _lookup(name).name: _lookup(name).id
         for name in (
             "excavator_body",
             "bucket",
@@ -128,29 +147,29 @@ def test_class_lookup_by_name_uses_labels_yaml() -> None:
     }
     assert found["excavator_body"] == 0
     with pytest.raises(UnknownCategoryError) as background:
-        lookup_class("background")
+        _lookup("background")
     assert background.value.class_id is None
     with pytest.raises(UnknownCategoryError) as zero_name:
-        lookup_class("0")
+        _lookup("0")
     assert zero_name.value.category_name == "0"
     assert zero_name.value.class_id is None
 
-    named_bucket = validate_frame(
+    named_bucket = _validate(
         _frame(boxes=[_box("bucket", category_id=0, x1=1, y1=1, x2=5, y2=5)])
     )
-    assert named_bucket.boxes[0].class_name.value == "bucket"
+    assert named_bucket.boxes[0].class_name == "bucket"
     assert named_bucket.boxes[0].class_id == 1
 
-    named_body = validate_frame(
+    named_body = _validate(
         _frame(boxes=[_box("excavator_body", category_id=99, x1=1, y1=1, x2=5, y2=5)])
     )
-    assert named_body.boxes[0].class_name.value == "excavator_body"
+    assert named_body.boxes[0].class_name == "excavator_body"
     assert named_body.boxes[0].class_id == 0
 
 
 def test_iscrowd_raises_unsupported_crowd_not_partial() -> None:
     with pytest.raises(UnsupportedCrowdError) as caught:
-        validate_frame(
+        _validate(
             _frame(
                 boxes=[
                     _box(
@@ -174,7 +193,7 @@ def test_iscrowd_raises_unsupported_crowd_not_partial() -> None:
     assert "iscrowd=1" in error.message
 
     with pytest.raises(UnsupportedCrowdError) as dump_crowd:
-        validate_frame(
+        _validate(
             _frame(
                 boxes=[
                     _box("dump", category_id=0, iscrowd=1, visibility="partial"),
@@ -186,11 +205,11 @@ def test_iscrowd_raises_unsupported_crowd_not_partial() -> None:
     assert dump_crowd.value.visibility is None
 
     with pytest.raises(UnsupportedCrowdError) as other:
-        validate_frame(_frame(boxes=[_box("bucket", iscrowd=2)]))
+        _validate(_frame(boxes=[_box("bucket", iscrowd=2)]))
     assert other.value.iscrowd == 2
     assert other.value.visibility is None
 
-    partial = validate_frame(
+    partial = _validate(
         _frame(
             review_status="reviewed",
             boxes=[_box("bucket", visibility="partial", iscrowd=0)],
@@ -210,24 +229,24 @@ def test_hidden_bucket_note_does_not_add_a_box() -> None:
         "hidden bucket, do not invent a box",
     )
     for note in notes:
-        record = validate_frame(_frame(review_status="reviewed", note=note, boxes=[]))
+        record = _validate(_frame(review_status="reviewed", note=note, boxes=[]))
         assert record.boxes == []
         assert record.label_state is LabelState.reviewed_empty
         assert record.note == note
 
-    body_only = validate_frame(
+    body_only = _validate(
         _frame(
             review_status="reviewed",
             note="bucket is hidden behind the truck",
             boxes=[_box("excavator_body", x1=4, y1=4, x2=40, y2=50)],
         )
     )
-    assert [box.class_name.value for box in body_only.boxes] == ["excavator_body"]
+    assert [box.class_name for box in body_only.boxes] == ["excavator_body"]
     assert len(body_only.boxes) == 1
 
 
 def test_unlabelable_frame_is_excluded_from_detector_training() -> None:
-    record = validate_frame(
+    record = _validate(
         _frame(
             review_status="reviewed",
             visibility="unlabelable",
@@ -243,7 +262,7 @@ def test_unlabelable_frame_is_excluded_from_detector_training() -> None:
     assert record.boxes == []
     assert record.label_state is not LabelState.reviewed_empty
 
-    with_box = validate_frame(
+    with_box = _validate(
         _frame(
             review_status="reviewed",
             boxes=[_box("bucket", visibility="unlabelable")],
@@ -254,11 +273,11 @@ def test_unlabelable_frame_is_excluded_from_detector_training() -> None:
     assert with_box.is_negative is False
     assert len(with_box.boxes) == 1
     assert with_box.boxes[0].visibility is Visibility.unlabelable
-    assert with_box.boxes[0].class_name.value == "bucket"
+    assert with_box.boxes[0].class_name == "bucket"
 
 
 def test_nested_truck_bed_inside_haul_truck_is_valid() -> None:
-    record = validate_frame(
+    record = _validate(
         _frame(
             review_status="reviewed",
             boxes=[
@@ -278,7 +297,7 @@ def test_nested_truck_bed_inside_haul_truck_is_valid() -> None:
     assert record.label_state is LabelState.reviewed
     assert record.trainable is True
     assert len(record.boxes) == 2
-    by_name = {box.class_name.value: box for box in record.boxes}
+    by_name = {box.class_name: box for box in record.boxes}
     assert set(by_name) == {"haul_truck", "truck_bed"}
     outer = by_name["haul_truck"]
     inner = by_name["truck_bed"]
@@ -294,7 +313,7 @@ def test_nested_truck_bed_inside_haul_truck_is_valid() -> None:
 
 def test_annotation_attributes_round_trip() -> None:
     reviewed_at = datetime(2026, 10, 10, 8, 30, tzinfo=UTC)
-    record = validate_frame(
+    record = _validate(
         _frame(
             review_status="reviewed",
             annotator="alex",
@@ -367,6 +386,34 @@ def test_annotation_guide_is_russian_and_covers_the_rules() -> None:
     cyrillic = sum(1 for char in text if "А" <= char <= "я" or char in "Ёё")
     latin = sum(1 for char in text if "A" <= char <= "Z" or "a" <= char <= "z")
     assert cyrillic > latin
+
+
+def test_validate_frame_stores_shovel_at_the_catalog_id(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    list_catalogs(workspace)
+    copy_catalog(workspace, "excavation", "pit")
+    pit = add_class(workspace, "pit", "shovel", "Лопата", "Видимая лопата.")
+    shovel_id = next(item.id for item in pit.classes if item.name == "shovel")
+    stored = validate_frame(_frame(boxes=[_box("shovel")]), pit)
+    assert stored.boxes[0].class_name == "shovel"
+    assert stored.boxes[0].class_id == shovel_id
+    matched = validate_frame(_frame(boxes=[_box("shovel", class_id=shovel_id)]), pit)
+    assert matched.boxes[0].class_id == shovel_id
+
+    with pytest.raises(LabError) as caught:
+        validate_frame(_frame(boxes=[_box("shovel", class_id=0)]), pit)
+    assert caught.value.code == "class_id_mismatch"
+    assert "shovel" in caught.value.message
+    assert "bucket" not in caught.value.message
+
+
+def test_validate_frame_without_catalog_does_not_emit_excavator_body() -> None:
+    assert "load_labels" not in inspect.getsource(validate_frame)
+    assert "load_labels" not in inspect.getsource(build_class_mapping)
+    with pytest.raises(TypeError):
+        validate_frame(_frame(boxes=[_box("excavator_body")]))
+    with pytest.raises(TypeError):
+        build_class_mapping()
 
 
 def _box(category_name: str, **overrides: object) -> dict[str, object]:

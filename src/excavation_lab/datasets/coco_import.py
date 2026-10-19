@@ -2,9 +2,18 @@
 
 Split comes from ``frames_manifest.csv``. A CVAT subset directory or an
 ``instances_<subset>.json`` name does not move a frame. Category ids are
-not internal ids: ``class_mapping`` resolves the category name.
+not internal ids: the category ``name`` is matched to the project catalog.
 ``iscrowd`` other than 0 is refused. Attributes COCO training files do not
 carry are written to ``attributes_sidecar.json``.
+
+A frame already stored keeps its ``reviewed_at``. The import clock is not
+written onto that field. Boxes of catalog classes the ZIP does not list
+stay, and that missing class is not stored as a negative. A review at or
+after ``added_at`` of such a class is left as stored: boxes, ``reviewed_at``,
+and the note. The stored frame is not deleted.
+
+A frame already in this batch and absent from the ZIP stays, including
+its JPEG. The ZIP replaces only the frames it contains.
 
 This module does not propose a split and does not start training.
 """
@@ -21,7 +30,7 @@ import shutil
 import sqlite3
 import zipfile
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -30,12 +39,25 @@ import cv2
 import numpy as np
 from pydantic import Field, ValidationError
 
+from excavation_lab.datasets.blocks import assignment_at as role_at
+from excavation_lab.datasets.catalog import (
+    StoredCatalog,
+    StoredCatalogClass,
+    require_project_catalog,
+)
 from excavation_lab.datasets.cvat_export import (
     MANIFEST_COLUMNS,
     _parse_batch_id,
     safe_member_name,
 )
 from excavation_lab.datasets.geometry import xywh_to_xyxy
+from excavation_lab.datasets.label_store import (
+    FrameWrite,
+    _frame_label_document,
+    _frame_sidecar_document,
+    batch_directory,
+    upsert_frames,
+)
 from excavation_lab.datasets.labels import (
     BoxDraft,
     FrameDraft,
@@ -51,11 +73,12 @@ from excavation_lab.errors import (
 )
 from excavation_lab.schemas import (
     SCHEMA_VERSION,
+    AnnotationBox,
+    CatalogConfig,
     ReviewStatus,
     SplitName,
     StrictModel,
     Visibility,
-    load_labels,
 )
 from excavation_lab.storage import (
     connect,
@@ -102,7 +125,12 @@ _SKIP_JSON = frozenset({"predictions.coco.json", "batch.json"})
 
 
 class ImportResult(StrictModel):
-    """What ``import-coco`` stored. The original zip is ``source_zip``."""
+    """What ``import-coco`` wrote from one ZIP. The original zip is ``source_zip``.
+
+    ``image_count`` is how many frames the ZIP contributed. It is not the
+    number of frames stored in the batch afterwards. Frames already in the
+    batch and absent from the ZIP stay.
+    """
 
     batch_id: str = Field(min_length=1)
     project_id: str = Field(min_length=1)
@@ -110,7 +138,10 @@ class ImportResult(StrictModel):
     source_zip: str = Field(min_length=1)
     sidecar_path: str = Field(min_length=1)
     labels_path: str = Field(min_length=1)
-    image_count: int = Field(ge=1)
+    image_count: int = Field(
+        ge=1,
+        description="Frames the ZIP contributed, not the total stored in the batch.",
+    )
     reviewed_empty: int = Field(ge=0)
     flagged_unreviewed: int = Field(ge=0)
     stored_excluded: int = Field(ge=0)
@@ -169,19 +200,18 @@ class ImportedFrame:
     record: LabelRecord
 
 
-def build_class_mapping() -> dict[str, Any]:
-    """Name → internal id. The COCO category id in a snapshot is this id.
+def build_class_mapping(catalog: StoredCatalog | CatalogConfig) -> dict[str, Any]:
+    """Name → catalog id. The COCO category id in a snapshot is this id.
 
-    The installed RF-DETR loader remaps category ids on its own. This
-    document is the authority for our four names. Id 0 is ``excavator_body``.
+    The installed RF-DETR loader remaps category ids on its own. Id 0 is a
+    class, not background. The catalog is an argument.
     """
-    labels = load_labels()
     by_name = {
-        item.name.value: {
+        item.name: {
             "internal_id": item.id,
             "coco_category_id": item.id,
         }
-        for item in labels.classes
+        for item in catalog.classes
     }
     return {"schema_version": SCHEMA_VERSION, "by_name": by_name}
 
@@ -190,13 +220,14 @@ def resolve_category_name(
     category_name: str,
     category_id: int,
     *,
+    catalog: StoredCatalog | CatalogConfig,
     frame_id: str | None = None,
 ) -> int:
-    """Return the internal id for ``category_name``.
+    """Return the catalog id for ``category_name``.
 
-    ``category_id`` is not the internal id. Id 99 named ``bucket`` is 1.
-    Id 0 named ``dump`` is ``UnknownCategoryError``, not background and not
-    ``excavator_body``.
+    ``category_id`` is not the internal id. A known name keeps that catalog
+    id. An unknown name raises ``UnknownCategoryError`` and is not snapped
+    to a neighbor or to id 0.
     """
     if isinstance(category_id, bool) or not isinstance(category_id, int):
         raise LabError(
@@ -207,7 +238,7 @@ def resolve_category_name(
     if isinstance(category_name, bool) or not isinstance(category_name, str):
         raise UnknownCategoryError(str(category_name), frame_id)
     name = category_name.strip()
-    found = build_class_mapping()["by_name"].get(name)
+    found = build_class_mapping(catalog)["by_name"].get(name)
     if found is None:
         raise UnknownCategoryError(name, frame_id)
     return int(found["internal_id"])
@@ -227,7 +258,7 @@ def import_coco(
     manifest, and its SHA-256 must match. ``image_id`` and ``annotation_id``
     are unique. One ``split_group_id`` has one split.
     """
-    video_id, _ignored_batch_split = _parse_batch_id(batch_id)
+    video_id, batch_split = _parse_batch_id(batch_id)
     if isinstance(max_unpack_bytes, bool) or not isinstance(max_unpack_bytes, int):
         raise LabError("zip_too_large", _ZIP_TOO_LARGE)
     if max_unpack_bytes < 0:
@@ -241,12 +272,33 @@ def import_coco(
     _pair_manifest(rows, images)
     get_video(workspace, project_id, video_id)
     frozen = require_frozen(workspace, project_id, video_id)
+    catalog = require_project_catalog(workspace, project_id)
     built = [
-        _build_frame(row, images[row.image_file], annotations, categories, members, frozen)
+        _build_frame(
+            row,
+            images[row.image_file],
+            annotations,
+            categories,
+            members,
+            frozen,
+            catalog,
+        )
         for row in rows
     ]
-    batch_dir = project_dir / "annotation_batches" / batch_id
-    _publish(batch_dir, project_dir, built, frozen, batch_id, project_id, video_id)
+    stored_frames, stored_sidecars = _indexed_imports(project_dir)
+    zip_names = {name.strip() for name in categories.values()}
+    built = [
+        _merge_stored(
+            item,
+            stored_frames.get((item.row.video_id, item.row.source_frame_index)),
+            stored_sidecars.get((item.row.video_id, item.row.source_frame_index)),
+            catalog,
+            zip_names,
+        )
+        for item in built
+    ]
+    batch_dir = batch_directory(workspace, project_id, video_id, batch_split)
+    _publish(workspace, project_id, video_id, batch_split, built, frozen)
     source_zip = batch_dir / "source.zip"
     _copy_source(source, source_zip)
     _record_batch(workspace, project_id, batch_id, video_id, source_zip)
@@ -272,10 +324,13 @@ def import_coco(
 
 
 def format_import_summary(result: ImportResult) -> str:
-    """Russian operator text plus the stored zip path."""
+    """Russian operator text plus the stored zip path.
+
+    The first count is the ZIP, not every frame now stored in the batch.
+    """
     return "\n".join(
         [
-            f"Импортировано кадров: {result.image_count}.",
+            f"Кадров из архива: {result.image_count}.",
             f"Проверенных пустых: {result.reviewed_empty}.",
             f"Непроверенных: {result.flagged_unreviewed}.",
             f"Исключённых: {result.stored_excluded}.",
@@ -577,6 +632,7 @@ def _build_frame(
     categories: Mapping[int, str],
     members: Mapping[str, bytes],
     frozen: FrozenSplit,
+    catalog: StoredCatalog | CatalogConfig,
 ) -> _Built:
     _match_frozen(frozen, row)
     image, subset, image_id = image_entry
@@ -599,7 +655,14 @@ def _build_frame(
                 "unknown_category",
                 f"Кадр {row.frame_id}: category_id {category_id} нет в categories.",
             )
-        resolved_ids.append(resolve_category_name(name, category_id, frame_id=row.frame_id))
+        resolved_ids.append(
+            resolve_category_name(
+                name,
+                category_id,
+                catalog=catalog,
+                frame_id=row.frame_id,
+            )
+        )
         attrs = _collect_attributes(annotation, _COCO_ANNOTATION_KEYS)
         x1, y1, x2, y2 = _xyxy(annotation, row)
         drafts.append(
@@ -634,7 +697,8 @@ def _build_frame(
             reviewed_at=_reviewed_at(image_attributes.get("reviewed_at"), row),
             note=_optional_text(image_attributes.get("note")),
             boxes=drafts,
-        )
+        ),
+        catalog,
     )
     for box, internal_id in zip(record.boxes, resolved_ids, strict=True):
         if box.class_id != internal_id:
@@ -654,40 +718,162 @@ def _build_frame(
     )
 
 
+def _merge_stored(
+    item: _Built,
+    stored: ImportedFrame | None,
+    sidecar: dict[str, Any] | None,
+    catalog: StoredCatalog,
+    zip_names: set[str],
+) -> _Built:
+    """Keep a stored review when this ZIP does not know a later class.
+
+    ``reviewed_at`` is the stored instant, never the import clock. A review
+    at or after ``added_at`` of a catalog class missing from the ZIP is left
+    untouched. An earlier review keeps boxes of those missing classes and
+    still takes the ZIP's boxes for names the ZIP does contain.
+    """
+    if stored is None:
+        return item
+    missing = [entry for entry in catalog.classes if entry.name not in zip_names]
+    if _reviewed_after_missing_class(stored.record.reviewed_at, missing):
+        return _keep_stored_frame(item, stored, sidecar)
+    catalog_names = {entry.name for entry in catalog.classes}
+    kept = [
+        box
+        for box in stored.record.boxes
+        if box.class_name in catalog_names and box.class_name not in zip_names
+    ]
+    incoming = [box for box in item.record.boxes if box.class_name in zip_names]
+    record = validate_frame(
+        FrameDraft(
+            video_id=stored.record.video_id,
+            source_frame_index=stored.record.source_frame_index,
+            review_status=stored.record.review_status,
+            visibility=stored.record.visibility,
+            annotator=stored.record.annotator,
+            reviewed_at=stored.record.reviewed_at,
+            note=stored.record.note,
+            boxes=[_draft_from_box(box) for box in (*incoming, *kept)],
+        ),
+        catalog,
+    )
+    return replace(item, record=record, flagged=_flagged(record))
+
+
+def _keep_stored_frame(
+    item: _Built,
+    stored: ImportedFrame,
+    sidecar: dict[str, Any] | None,
+) -> _Built:
+    attributes = item.image_attributes
+    boxes = item.sidecar_boxes
+    if sidecar is not None:
+        raw_attributes = sidecar.get("attributes")
+        raw_boxes = sidecar.get("boxes")
+        if isinstance(raw_attributes, dict):
+            attributes = dict(raw_attributes)
+        if isinstance(raw_boxes, list) and all(isinstance(box, dict) for box in raw_boxes):
+            boxes = [dict(box) for box in raw_boxes]
+    return replace(
+        item,
+        record=stored.record,
+        flagged=_flagged(stored.record),
+        image_attributes=attributes,
+        sidecar_boxes=boxes,
+    )
+
+
+def _reviewed_after_missing_class(
+    reviewed_at: datetime | None,
+    missing: list[StoredCatalogClass],
+) -> bool:
+    """True when this review saw a catalog class the ZIP does not list."""
+    if reviewed_at is None or reviewed_at.tzinfo is None or reviewed_at.utcoffset() is None:
+        return False
+    instant = reviewed_at.astimezone(UTC)
+    return any(instant >= entry.added_at for entry in missing)
+
+
+def _draft_from_box(box: AnnotationBox) -> BoxDraft:
+    return BoxDraft(
+        category_name=box.class_name,
+        class_id=box.class_id,
+        visibility=box.visibility,
+        truncated=box.truncated,
+        instance_local_id=box.instance_local_id,
+        x1=box.x1,
+        y1=box.y1,
+        x2=box.x2,
+        y2=box.y2,
+        note=box.note,
+        iscrowd=0,
+    )
+
+
+def _flagged(record: LabelRecord) -> list[str]:
+    if record.label_state is LabelState.unreviewed:
+        return ["unreviewed"]
+    return []
+
+
+def _indexed_imports(
+    project_dir: Path,
+) -> tuple[dict[tuple[str, int], ImportedFrame], dict[tuple[str, int], dict[str, Any]]]:
+    root = project_dir / "annotation_batches"
+    frames: dict[tuple[str, int], ImportedFrame] = {}
+    sidecars: dict[tuple[str, int], dict[str, Any]] = {}
+    if not root.is_dir():
+        return frames, sidecars
+    for child in sorted(path for path in root.iterdir() if path.is_dir() and not path.is_symlink()):
+        labels_path = child / "imported_labels.json"
+        if labels_path.is_file() and not labels_path.is_symlink():
+            for frame in _load_batch(labels_path):
+                frames[(frame.video_id, frame.source_frame_index)] = frame
+        side_path = child / "attributes_sidecar.json"
+        if side_path.is_file() and not side_path.is_symlink():
+            sidecars.update(_index_sidecar(side_path))
+    return frames, sidecars
+
+
+def _index_sidecar(path: Path) -> dict[tuple[str, int], dict[str, Any]]:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise LabError("invalid_import", f"Файл {path.name} повреждён.") from exc
+    raw_frames = document.get("frames") if isinstance(document, dict) else None
+    if not isinstance(raw_frames, list):
+        raise LabError("invalid_import", f"Файл {path.name} повреждён.")
+    found: dict[tuple[str, int], dict[str, Any]] = {}
+    for raw in raw_frames:
+        if not isinstance(raw, dict):
+            raise LabError("invalid_import", f"Файл {path.name} повреждён.")
+        video_id = raw.get("video_id")
+        index = raw.get("source_frame_index")
+        if not isinstance(video_id, str) or isinstance(index, bool) or not isinstance(index, int):
+            raise LabError("invalid_import", f"Файл {path.name} повреждён.")
+        found[(video_id, index)] = raw
+    return found
+
+
 def _match_frozen(frozen: FrozenSplit, row: _ManifestRow) -> None:
-    expected_split, expected_group = _expected_assignment(frozen, row)
-    if row.split is not expected_split or row.split_group_id != expected_group:
+    expected = _expected_assignment(frozen, row)
+    if row.split.value != expected:
         raise LabError(
             "split_mismatch",
-            f"Кадр {row.frame_id}: манифест указывает {row.split.value}"
-            f"/{row.split_group_id}, зафиксировано {expected_split.value}"
-            f"/{expected_group}. Split не пересчитывается.",
+            f"Кадр {row.frame_id}: манифест указывает {row.split.value}, "
+            f"зафиксировано {expected}. Split не пересчитывается.",
         )
 
 
-def _expected_assignment(frozen: FrozenSplit, row: _ManifestRow) -> tuple[SplitName, str]:
-    if row.episode_id:
-        matches = [
-            episode for episode in frozen.episodes if episode.episode_id == row.episode_id
-        ]
-        if len(matches) != 1:
-            raise LabError(
-                "episode_not_found",
-                f"Кадр {row.frame_id}: эпизод «{row.episode_id}» не найден "
-                "в зафиксированном разбиении. Split не пересчитывается.",
-            )
-        episode = matches[0]
-        return episode.split, episode.split_group_id
-    for block in frozen.blocks:
-        if block.role not in {"train", "validation", "test"}:
-            continue
-        if block.start_s <= row.source_time_s < block.end_s:
-            return SplitName(block.role), ""
-    raise LabError(
-        "frame_unassigned",
-        f"Кадр {row.frame_id} не попадает в зафиксированное разбиение. "
-        "Split не пересчитывается.",
-    )
+def _expected_assignment(frozen: FrozenSplit, row: _ManifestRow) -> str:
+    role = role_at(frozen.blocks, row.source_time_s)
+    if role is None:
+        raise LabError(
+            "frame_unassigned",
+            f"Кадр {row.frame_id} не попадает в зафиксированное разбиение. "
+            "Split не пересчитывается.",
+        )
+    return role
 
 
 def _locate_image(
@@ -916,89 +1102,51 @@ def _coerce_attributes(raw: object) -> dict[str, Any]:
 
 
 def _publish(
-    batch_dir: Path,
-    project_dir: Path,
-    built: list[_Built],
-    frozen: FrozenSplit,
-    batch_id: str,
+    workspace: Path,
     project_id: str,
     video_id: str,
+    split: SplitName,
+    built: list[_Built],
+    frozen: FrozenSplit,
 ) -> None:
-    resolved_dir = batch_dir.resolve()
-    if not resolved_dir.is_relative_to(project_dir.resolve()):
-        raise LabError("invalid_batch_id", "Недопустимый идентификатор пакета.")
-    staging = batch_dir.parent / f".{batch_id}.importing"
-    if staging.exists():
-        shutil.rmtree(staging)
-    staging.mkdir(parents=True)
-    try:
-        images = staging / "images"
-        images.mkdir()
-        for item in built:
-            (images / item.row.image_file).write_bytes(item.payload)
-        labels = {
-            "schema_version": SCHEMA_VERSION,
-            "batch_id": batch_id,
-            "project_id": project_id,
-            "video_id": video_id,
-            "split_content_hash": frozen.content_hash,
-            "frames": [_frame_document(item) for item in built],
-        }
-        sidecar = {
-            "schema_version": SCHEMA_VERSION,
-            "batch_id": batch_id,
-            "frames": [_sidecar_frame(item) for item in built],
-        }
-        _write_json(staging / "imported_labels.json", labels)
-        _write_json(staging / "attributes_sidecar.json", sidecar)
-        batch_dir.mkdir(parents=True, exist_ok=True)
-        destination_images = batch_dir / "images"
-        if destination_images.exists():
-            shutil.rmtree(destination_images)
-        os.replace(images, destination_images)
-        os.replace(staging / "imported_labels.json", batch_dir / "imported_labels.json")
-        os.replace(staging / "attributes_sidecar.json", batch_dir / "attributes_sidecar.json")
-    except Exception:
-        if staging.exists():
-            shutil.rmtree(staging, ignore_errors=True)
-        raise
-    if staging.exists():
-        shutil.rmtree(staging, ignore_errors=True)
+    upsert_frames(
+        workspace,
+        project_id,
+        video_id,
+        split,
+        [_write_from_built(item) for item in built],
+        frozen=frozen,
+        batch_status="imported",
+    )
+
+
+def _write_from_built(item: _Built) -> FrameWrite:
+    row = item.row
+    return FrameWrite(
+        image_file=row.image_file,
+        source_frame_index=row.source_frame_index,
+        source_pts=row.source_pts,
+        time_base=row.time_base,
+        source_time_s=row.source_time_s,
+        episode_id=row.episode_id,
+        split=row.split,
+        split_group_id=row.split_group_id,
+        width=row.width,
+        height=row.height,
+        payload=item.payload,
+        record=item.record,
+        coco_subset=item.coco_subset,
+        image_attributes=item.image_attributes,
+        sidecar_boxes=item.sidecar_boxes,
+    )
 
 
 def _frame_document(item: _Built) -> dict[str, Any]:
-    row = item.row
-    return {
-        "image_file": row.image_file,
-        "video_id": row.video_id,
-        "source_frame_index": row.source_frame_index,
-        "source_pts": row.source_pts,
-        "time_base": row.time_base,
-        "source_time_s": row.source_time_s,
-        "episode_id": row.episode_id,
-        "split": row.split.value,
-        "split_group_id": row.split_group_id,
-        "image_sha256": row.image_sha256,
-        "size_bytes": len(item.payload),
-        "width": row.width,
-        "height": row.height,
-        "coco_subset": item.coco_subset,
-        "flagged": list(item.flagged),
-        "record": item.record.model_dump(mode="json"),
-    }
+    return _frame_label_document(_write_from_built(item), item.row.video_id)
 
 
 def _sidecar_frame(item: _Built) -> dict[str, Any]:
-    return {
-        "image_file": item.row.image_file,
-        "video_id": item.row.video_id,
-        "source_frame_index": item.row.source_frame_index,
-        "review_status": item.record.review_status.value,
-        "flagged": list(item.flagged),
-        "coco_subset": item.coco_subset,
-        "attributes": item.image_attributes,
-        "boxes": item.sidecar_boxes,
-    }
+    return _frame_sidecar_document(_write_from_built(item), item.row.video_id)
 
 
 def _load_batch(labels_path: Path) -> list[ImportedFrame]:
@@ -1116,11 +1264,6 @@ def _record_batch(
             )
         except sqlite3.IntegrityError as exc:
             raise LabError("video_not_found", "Видео не найдено в этом проекте.") from exc
-
-
-def _write_json(path: Path, document: Mapping[str, Any]) -> None:
-    text = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True)
-    path.write_text(text + "\n", encoding="utf-8")
 
 
 def _subset_from_coco_name(name: str) -> str:

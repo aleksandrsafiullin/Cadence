@@ -11,6 +11,7 @@ import hashlib
 import io
 import json
 import zipfile
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import cv2
@@ -23,15 +24,22 @@ from excavation_lab.cli import app
 from excavation_lab.datasets import coco_import as import_mod
 from excavation_lab.datasets import snapshot as snapshot_mod
 from excavation_lab.datasets import splits as split_mod
+from excavation_lab.datasets.blocks import RoleBlock
+from excavation_lab.datasets.catalog import (
+    add_class,
+    list_catalogs,
+    require_project_catalog,
+)
+from excavation_lab.datasets.class_supervision import class_supervision
 from excavation_lab.datasets.coco_import import (
     DEFAULT_MAX_UNPACK_BYTES,
     import_coco,
 )
 from excavation_lab.datasets.cvat_export import MANIFEST_COLUMNS
-from excavation_lab.datasets.episodes import EpisodeSpec, add_episode
 from excavation_lab.datasets.geometry import xywh_to_xyxy
+from excavation_lab.datasets.labels import LabelRecord
 from excavation_lab.datasets.snapshot import snapshot_dataset
-from excavation_lab.datasets.splits import freeze_split, propose_split, write_proposal
+from excavation_lab.datasets.splits import freeze_split, write_blocks
 from excavation_lab.errors import (
     LabError,
     SplitNotFrozenError,
@@ -40,10 +48,10 @@ from excavation_lab.errors import (
 )
 
 _RUNNER = CliRunner()
-_EPISODES = (
-    EpisodeSpec("train-ep", "vid", "g-train", 0, 60, "погрузка"),
-    EpisodeSpec("val-ep", "vid", "g-val", 72, 92, "погрузка"),
-    EpisodeSpec("test-ep", "vid", "g-test", 104, 124, "погрузка"),
+_BLOCKS = (
+    RoleBlock(start_s=0, end_s=60, role="train"),
+    RoleBlock(start_s=72, end_s=92, role="validation"),
+    RoleBlock(start_s=104, end_s=124, role="test"),
 )
 
 
@@ -131,22 +139,18 @@ def _write_zip(path: Path, members: dict[str, bytes]) -> None:
 
 def _frozen_project(tmp_path: Path) -> Path:
     workspace = tmp_path / "workspace"
-    storage.create_project("pilot", workspace)
+    list_catalogs(workspace)
+    storage.create_project("pilot", workspace, catalog_id="excavation")
     clip = workspace / "clip.mp4"
     clip.write_bytes(b"synthetic-not-a-video")
     storage.insert_video(workspace, "pilot", "vid", path=clip, name="clip.mp4")
-    for episode in _EPISODES:
-        add_episode(workspace, "pilot", episode)
-    proposal = propose_split("vid", list(_EPISODES))
-    proposal_path = write_proposal(workspace, "pilot", proposal)
-    freeze_split(workspace, "pilot", proposal_path)
+    freeze_split(workspace, "pilot", write_blocks(workspace, "pilot", "vid", list(_BLOCKS)))
     frozen = split_mod.require_frozen(workspace, "pilot", "vid")
-    by_id = {episode.episode_id: episode for episode in frozen.episodes}
-    assert by_id["train-ep"].split.value == "train"
-    assert by_id["train-ep"].split_group_id == "g-train"
-    assert by_id["val-ep"].split.value == "validation"
-    assert by_id["val-ep"].split_group_id == "g-val"
-    assert by_id["test-ep"].split.value == "test"
+    assert [(block.role, block.start_s, block.end_s) for block in frozen.blocks] == [
+        ("train", 0.0, 60.0),
+        ("validation", 72.0, 92.0),
+        ("test", 104.0, 124.0),
+    ]
     return workspace
 
 
@@ -484,7 +488,8 @@ def test_coco_subset_test_follows_manifest_train(
 
 def test_snapshot_without_manifest_is_split_not_frozen(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
-    storage.create_project("pilot", workspace)
+    list_catalogs(workspace)
+    storage.create_project("pilot", workspace, catalog_id="excavation")
     clip = workspace / "clip.mp4"
     clip.write_bytes(b"synthetic-not-a-video")
     storage.insert_video(workspace, "pilot", "vid", path=clip, name="clip.mp4")
@@ -512,7 +517,8 @@ def test_snapshot_without_manifest_is_split_not_frozen(tmp_path: Path) -> None:
 @pytest.mark.parametrize("name", ["../evil.jpg", "/etc/passwd", "images/../../passwd"])
 def test_zip_rejects_parent_and_absolute(tmp_path: Path, name: str) -> None:
     workspace = tmp_path / "workspace"
-    storage.create_project("pilot", workspace)
+    list_catalogs(workspace)
+    storage.create_project("pilot", workspace, catalog_id="excavation")
     zip_path = workspace / "bad.zip"
     _write_zip(zip_path, {name: b"x"})
     with pytest.raises(LabError) as caught:
@@ -523,7 +529,8 @@ def test_zip_rejects_parent_and_absolute(tmp_path: Path, name: str) -> None:
 
 def test_zip_rejects_uncompressed_total_above_cap(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
-    storage.create_project("pilot", workspace)
+    list_catalogs(workspace)
+    storage.create_project("pilot", workspace, catalog_id="excavation")
     zip_path = workspace / "bulky.zip"
     _write_zip(zip_path, {"images/a.jpg": b"y" * 80})
     with pytest.raises(LabError) as caught:
@@ -543,6 +550,153 @@ def test_import_rejects_dump_category_id_zero(tmp_path: Path) -> None:
     assert caught.value.category_name == "dump"
     assert caught.value.class_id is None
     assert not (_batch(workspace, "vid__train") / "imported_labels.json").exists()
+
+
+def test_import_maps_shovel_by_name_not_category_id(tmp_path: Path) -> None:
+    workspace = _frozen_project(tmp_path)
+    add_class(workspace, "excavation", "shovel", "Лопата", "Видимая лопата.")
+    catalog = require_project_catalog(workspace, "pilot")
+    shovel_id = next(item.id for item in catalog.classes if item.name == "shovel")
+    assert shovel_id == 4
+    payload = _jpeg(32, 24, 12)
+    zip_path = workspace / "shovel.zip"
+    _write_zip(zip_path, _single_members(payload, category_id=0, category_name="shovel"))
+    result = import_coco(workspace, "pilot", "vid__train", zip_path)
+    labels = json.loads(Path(result.labels_path).read_text(encoding="utf-8"))
+    box = labels["frames"][0]["record"]["boxes"][0]
+    assert box["class_name"] == "shovel"
+    assert box["class_id"] == shovel_id
+    assert box["class_name"] != "excavator_body"
+
+
+def test_four_excavation_names_keep_catalog_ids_after_shovel(tmp_path: Path) -> None:
+    workspace = _frozen_project(tmp_path)
+    add_class(workspace, "excavation", "shovel", "Лопата", "Видимая лопата.")
+    payload = _jpeg(32, 24, 30)
+    categories = (
+        (0, "bucket"),
+        (7, "excavator_body"),
+        (4, "haul_truck"),
+        (8, "truck_bed"),
+    )
+    boxes = (
+        (0, [1.0, 1.0, 4.0, 4.0]),
+        (7, [6.0, 6.0, 4.0, 4.0]),
+        (4, [12.0, 2.0, 4.0, 4.0]),
+        (8, [2.0, 12.0, 4.0, 4.0]),
+    )
+    zip_path = workspace / "four.zip"
+    _write_zip(zip_path, _labeled_members(payload, categories=categories, boxes=boxes))
+    result = import_coco(workspace, "pilot", "vid__train", zip_path)
+    labels = json.loads(Path(result.labels_path).read_text(encoding="utf-8"))
+    stored = {
+        box["class_name"]: box["class_id"] for box in labels["frames"][0]["record"]["boxes"]
+    }
+    assert stored == {
+        "bucket": 1,
+        "excavator_body": 0,
+        "haul_truck": 2,
+        "truck_bed": 3,
+    }
+    assert "shovel" not in stored
+
+
+def test_old_zip_keeps_pre_shovel_review(tmp_path: Path) -> None:
+    workspace = _frozen_project(tmp_path)
+    add_class(workspace, "excavation", "shovel", "Лопата", "Видимая лопата.")
+    catalog = require_project_catalog(workspace, "pilot")
+    shovel = next(item for item in catalog.classes if item.name == "shovel")
+    seed_at = next(item.added_at for item in catalog.classes if item.name == "bucket")
+    assert shovel.added_at > seed_at
+    reviewed_dt = seed_at + (shovel.added_at - seed_at) / 2
+    assert seed_at < reviewed_dt < shovel.added_at
+    reviewed = reviewed_dt.isoformat()
+    payload = _jpeg(32, 24, 40)
+    first = workspace / "with-shovel.zip"
+    _write_zip(
+        first,
+        _labeled_members(
+            payload,
+            categories=((0, "shovel"), (99, "bucket")),
+            boxes=((0, [8.0, 8.0, 4.0, 4.0]), (99, [2.0, 2.0, 4.0, 4.0])),
+            reviewed_at=reviewed,
+            note="старая заметка",
+        ),
+    )
+    import_coco(workspace, "pilot", "vid__train", first)
+    before = _stored_record(workspace)
+    later = (shovel.added_at + timedelta(hours=1)).isoformat()
+    second = workspace / "old-four.zip"
+    _write_zip(
+        second,
+        _labeled_members(
+            payload,
+            categories=(
+                (0, "excavator_body"),
+                (1, "bucket"),
+                (2, "haul_truck"),
+                (3, "truck_bed"),
+            ),
+            boxes=((1, [1.0, 1.0, 5.0, 5.0]),),
+            reviewed_at=later,
+            note="импорт",
+        ),
+    )
+    import_coco(workspace, "pilot", "vid__train", second)
+    after = _stored_record(workspace)
+    assert after["reviewed_at"] == before["reviewed_at"]
+    assert after["reviewed_at"] != later
+    assert _named_box(after, "shovel") == _named_box(before, "shovel")
+    assert _named_box(after, "bucket") != _named_box(before, "bucket")
+    assert _named_box(after, "bucket")["x1"] == 1.0
+    supervision = class_supervision(LabelRecord.model_validate(after), catalog)
+    assert "shovel" not in supervision.negatives
+    assert "shovel" in supervision.unsupervised
+
+
+def test_post_shovel_review_is_left_stored(tmp_path: Path) -> None:
+    workspace = _frozen_project(tmp_path)
+    add_class(workspace, "excavation", "shovel", "Лопата", "Видимая лопата.")
+    catalog = require_project_catalog(workspace, "pilot")
+    shovel = next(item for item in catalog.classes if item.name == "shovel")
+    reviewed = shovel.added_at.isoformat()
+    payload = _jpeg(32, 24, 50)
+    first = workspace / "reviewed-after.zip"
+    _write_zip(
+        first,
+        _labeled_members(
+            payload,
+            categories=((0, "shovel"), (99, "bucket")),
+            boxes=((0, [8.0, 8.0, 4.0, 4.0]), (99, [2.0, 2.0, 3.0, 3.0])),
+            reviewed_at=reviewed,
+            note="не трогать",
+        ),
+    )
+    import_coco(workspace, "pilot", "vid__train", first)
+    before = _stored_record(workspace)
+    second = workspace / "old-four.zip"
+    _write_zip(
+        second,
+        _labeled_members(
+            payload,
+            categories=(
+                (0, "excavator_body"),
+                (1, "bucket"),
+                (2, "haul_truck"),
+                (3, "truck_bed"),
+            ),
+            boxes=((1, [1.0, 1.0, 5.0, 5.0]),),
+            reviewed_at=(shovel.added_at + timedelta(days=1)).isoformat(),
+            note="замена",
+        ),
+    )
+    import_coco(workspace, "pilot", "vid__train", second)
+    after = _stored_record(workspace)
+    assert after == before
+    assert _named_box(after, "shovel")["class_name"] == "shovel"
+    assert after["note"] == "не трогать"
+    stored_review = datetime.fromisoformat(str(after["reviewed_at"]))
+    assert stored_review == shovel.added_at
 
 
 def test_import_rejects_iscrowd(tmp_path: Path) -> None:
@@ -668,6 +822,82 @@ def test_import_rejects_a_box_outside_the_image(tmp_path: Path) -> None:
         import_coco(workspace, "pilot", "vid__train", zip_path)
     assert caught.value.code == "invalid_bbox"
     assert not (_batch(workspace, "vid__train") / "imported_labels.json").exists()
+
+
+def _stored_record(workspace: Path) -> dict[str, object]:
+    labels = json.loads(
+        (_batch(workspace, "vid__train") / "imported_labels.json").read_text(encoding="utf-8")
+    )
+    return labels["frames"][0]["record"]
+
+
+def _named_box(record: dict[str, object], name: str) -> dict[str, object]:
+    boxes = record["boxes"]
+    assert isinstance(boxes, list)
+    return next(box for box in boxes if box["class_name"] == name)
+
+
+def _labeled_members(
+    payload: bytes,
+    *,
+    categories: tuple[tuple[int, str], ...],
+    boxes: tuple[tuple[int, list[float]], ...],
+    reviewed_at: str | None = None,
+    note: str | None = None,
+) -> dict[str, bytes]:
+    image_file = "vid_1.jpg"
+    width, height = 32, 24
+    attributes: dict[str, object] = {"review_status": "reviewed"}
+    if reviewed_at is not None:
+        attributes["reviewed_at"] = reviewed_at
+    if note is not None:
+        attributes["note"] = note
+    return {
+        "frames_manifest.csv": _manifest(
+            [
+                _row(
+                    image_file=image_file,
+                    payload=payload,
+                    index=1,
+                    episode_id="train-ep",
+                    split="train",
+                    group="g-train",
+                    time_s=10,
+                    width=width,
+                    height=height,
+                )
+            ]
+        ),
+        "annotations/instances_default.json": _json(
+            {
+                "categories": [
+                    {"id": category_id, "name": name, "supercategory": ""}
+                    for category_id, name in categories
+                ],
+                "images": [
+                    {
+                        "id": 1,
+                        "file_name": f"images/{image_file}",
+                        "width": width,
+                        "height": height,
+                        "attributes": attributes,
+                    }
+                ],
+                "annotations": [
+                    {
+                        "id": annotation_id,
+                        "image_id": 1,
+                        "category_id": category_id,
+                        "bbox": bbox,
+                        "area": bbox[2] * bbox[3],
+                        "iscrowd": 0,
+                    }
+                    for annotation_id, (category_id, bbox) in enumerate(boxes, start=1)
+                ],
+            }
+        ),
+        f"images/{image_file}": payload,
+    }
 
 
 def _single_members(

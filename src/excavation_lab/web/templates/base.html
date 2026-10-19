@@ -17,7 +17,7 @@
       <form method="post" action="/project">
         <input type="hidden" name="next" value="{{ current_path | default('/') }}">
         <label class="lab-label" for="lab-project">{{ project_label }}</label>
-        <select class="lab-select" id="lab-project" name="project"{% if not projects %} disabled{% endif %}>
+        <select class="lab-select" id="lab-project" name="project"{% if not projects %} disabled title="{{ no_project }}"{% endif %}>
           {% if not projects %}
           <option disabled selected>{{ no_project }}</option>
           {% else %}
@@ -42,6 +42,15 @@
         <a class="lab-nav-btn" href="{{ link.path }}"{% if link.current %} aria-current="page"{% endif %}>{{ link.title }}</a>
         {% endfor %}
       </nav>
+      <ol class="lab-workflow">
+        {% for stage in stages | default([]) %}
+        <li data-workflow="{{ stage.state }}"{% if stage.here %} aria-current="page"{% endif %}>
+          <a href="{{ stage.path }}">{{ stage.title }}</a>
+          <span class="lab-step-status">{{ stage.status }}</span>
+          {% if stage.caption %}<p class="lab-caption">{{ stage.caption }}</p>{% endif %}
+        </li>
+        {% endfor %}
+      </ol>
       <p class="lab-kicker">{{ kicker_appearance }}</p>
       <form method="post" action="/theme">
         <input type="hidden" name="next" value="{{ current_path | default('/') }}">
@@ -72,5 +81,6 @@
       {% block main %}{% endblock %}
     </main>
   </div>
+  <script src="/static/project_catalog.js"></script>
 </body>
 </html>

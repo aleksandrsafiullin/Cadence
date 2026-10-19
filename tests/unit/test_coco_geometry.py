@@ -8,6 +8,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from excavation_lab.datasets.catalog import catalog_from_seed
 from excavation_lab.datasets.coco_import import (
     build_class_mapping,
     resolve_category_name,
@@ -58,14 +59,15 @@ def test_letterbox_inverse_restores_original_coordinates() -> None:
 
 
 def test_class_mapping_uses_the_name() -> None:
-    assert resolve_category_name("bucket", 99, frame_id="pit:1") == 1
-    assert resolve_category_name("excavator_body", 99, frame_id="pit:3") == 0
-    mapping = build_class_mapping()
+    catalog = catalog_from_seed()
+    assert resolve_category_name("bucket", 99, catalog=catalog, frame_id="pit:1") == 1
+    assert resolve_category_name("excavator_body", 99, catalog=catalog, frame_id="pit:3") == 0
+    mapping = build_class_mapping(catalog)
     assert mapping["by_name"]["bucket"]["internal_id"] == 1
     assert mapping["by_name"]["excavator_body"]["internal_id"] == 0
     assert "dump" not in mapping["by_name"]
     with pytest.raises(UnknownCategoryError) as caught:
-        resolve_category_name("dump", 0, frame_id="pit:2")
+        resolve_category_name("dump", 0, catalog=catalog, frame_id="pit:2")
     error = caught.value
     assert error.category_name == "dump"
     assert error.class_id is None

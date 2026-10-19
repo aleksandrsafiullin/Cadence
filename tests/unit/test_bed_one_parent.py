@@ -498,6 +498,42 @@ def _beds(
     return result
 
 
+def test_catalog_names_gate_the_bed_associator() -> None:
+    truck = _Truck(_track(2), _TRUCK_B)
+    frame = _detections(("truck_bed",), (_SCORE,), (_BED,), 0.0)
+    original = np.array(frame.xyxy, copy=True)
+    names = frame.class_name
+    blocked = BedTruckAssociator.from_pilot(class_names=frozenset({"shovel"}))
+    skipped = blocked.update(
+        frame,
+        trucks=(truck,),
+        source_time_s=0.0,
+        run_id=_RUN,
+        video_id=_VIDEO,
+        view_id=None,
+    )
+    assert skipped.links == ()
+    assert blocked._tracks == []
+    assert frame.class_name == names
+    assert np.array_equal(frame.xyxy, original)
+    assert BedTruckAssociator.from_pilot(class_names=frozenset({"truck_bed"})).enabled() is False
+    assert BedTruckAssociator.from_pilot(class_names=frozenset()).enabled() is False
+    allowed = BedTruckAssociator.from_pilot(
+        class_names=frozenset({"truck_bed", "haul_truck"})
+    )
+    linked = allowed.update(
+        _detections(("truck_bed",), (_SCORE,), (_BED,), 0.0),
+        trucks=(truck,),
+        source_time_s=0.0,
+        run_id=_RUN,
+        video_id=_VIDEO,
+        view_id=None,
+    )
+    assert linked.links
+    assert linked.links[0].parent_track_id == truck.track_id
+    assert linked.links[0].xyxy == pytest.approx(_BED)
+
+
 def _track(local_id: int) -> str:
     return public_track_id(_RUN, _VIDEO, None, "haul_truck", local_id)
 

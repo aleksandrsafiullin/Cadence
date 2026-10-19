@@ -1,4 +1,4 @@
-"""Sampler stays inside a frozen split. Test frames and guards do not enter train."""
+"""Sampler stays inside frozen role blocks. A training block does not enter validation or test."""
 
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ from excavation_lab import storage
 from excavation_lab.cli import app
 from excavation_lab.datasets import sampler as sampler_mod
 from excavation_lab.datasets import splits as split_mod
+from excavation_lab.datasets.blocks import RoleBlock
+from excavation_lab.datasets.catalog import list_catalogs
 from excavation_lab.datasets.episodes import EpisodeSpec, add_episode
 from excavation_lab.datasets.sampler import (
     CloserPick,
@@ -30,8 +32,9 @@ from excavation_lab.datasets.sampler import (
     select_ticks,
 )
 from excavation_lab.datasets.splits import (
+    SplitProposal,
     freeze_split,
-    propose_split,
+    frozen_manifest_path,
     require_frozen,
     write_proposal,
 )
@@ -50,12 +53,18 @@ _SYNTHETIC_SPEC.loader.exec_module(_SYNTHETIC)
 write_synthetic_mp4 = _SYNTHETIC.write_synthetic_mp4
 
 _RUNNER = CliRunner()
-_LONG_EPISODES = (
-    EpisodeSpec("train-ep", "vid", "g-train", 0, 60, "погрузка"),
-    EpisodeSpec("val-ep", "vid", "g-val", 72, 92, "погрузка"),
-    EpisodeSpec("test-ep", "vid", "g-test", 104, 124, "погрузка"),
+_LONG_BLOCKS = (
+    RoleBlock(start_s=0, end_s=60, role="train"),
+    RoleBlock(start_s=72, end_s=92, role="validation"),
+    RoleBlock(start_s=104, end_s=124, role="test"),
 )
-_SHORT_EPISODES = (EpisodeSpec("train-ep", "vid", "g-train", 0, 4, "погрузка"),)
+_SHORT_BLOCKS = (RoleBlock(start_s=0, end_s=4, role="train"),)
+_LEFTOVER_TEST_EPISODE = {
+    "episode_id": "test-ep",
+    "split": "test",
+    "start_s": 0,
+    "end_s": 60,
+}
 
 
 def _cyrillic(text: str) -> bool:
@@ -92,6 +101,9 @@ def _write_identical_mp4(path: Path, frames: int, fps: int) -> None:
             container.mux(packet)
 
 
+_LONG_FPS = 2
+
+
 def _tick(
     index: int,
     time_s: float,
@@ -104,7 +116,7 @@ def _tick(
 @pytest.fixture(scope="module")
 def long_clip(tmp_path_factory: pytest.TempPathFactory) -> Path:
     path = tmp_path_factory.mktemp("long") / "long.mp4"
-    write_synthetic_mp4(path, 126, 2)
+    write_synthetic_mp4(path, 126, _LONG_FPS)
     return path
 
 
@@ -115,14 +127,34 @@ def twin_clip(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return path
 
 
-def _bind(tmp_path: Path, clip: Path, episodes: tuple[EpisodeSpec, ...]) -> Path:
+def _bind(
+    tmp_path: Path,
+    clip: Path,
+    blocks: tuple[RoleBlock, ...],
+    episodes: list[dict[str, object]] | None = None,
+) -> Path:
     workspace = tmp_path / "workspace"
-    storage.create_project("pilot", workspace)
+    list_catalogs(workspace)
+    storage.create_project("pilot", workspace, catalog_id="excavation")
     storage.replace_extra_roots(workspace, "pilot", [clip.parent])
     storage.insert_video(workspace, "pilot", "vid", path=clip, name=clip.name)
-    for episode in episodes:
-        add_episode(workspace, "pilot", episode)
-    proposal = propose_split("vid", list(episodes))
+    for item in episodes or []:
+        episode_id = item["episode_id"]
+        start_s = item["start_s"]
+        end_s = item["end_s"]
+        assert isinstance(episode_id, str)
+        assert isinstance(start_s, (int, float)) and not isinstance(start_s, bool)
+        assert isinstance(end_s, (int, float)) and not isinstance(end_s, bool)
+        add_episode(
+            workspace,
+            "pilot",
+            EpisodeSpec(episode_id, "vid", "g-leftover", float(start_s), float(end_s), "погрузка"),
+        )
+    proposal = SplitProposal(
+        video_id="vid",
+        blocks=list(blocks),
+        episodes=list(episodes or []),
+    )
     proposal_path = write_proposal(workspace, "pilot", proposal)
     freeze_split(workspace, "pilot", proposal_path)
     return workspace
@@ -200,6 +232,8 @@ def test_sampler_source_calls_require_frozen_and_not_propose_split() -> None:
             called.add(func.attr)
     assert "require_frozen" in called
     assert "propose_split" not in called
+    assert "propose_for_project" not in called
+    assert "excluded_guard" not in source
     assert "image" not in FrameTick.__dataclass_fields__
     assert "image" not in SelectedTick.__dataclass_fields__
 
@@ -210,7 +244,8 @@ def test_sample_refuses_when_split_is_not_frozen(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workspace = tmp_path / "workspace"
-    storage.create_project("pilot", workspace)
+    list_catalogs(workspace)
+    storage.create_project("pilot", workspace, catalog_id="excavation")
     storage.replace_extra_roots(workspace, "pilot", [twin_clip.parent])
     storage.insert_video(workspace, "pilot", "vid", path=twin_clip, name="twin.mp4")
     _arm_propose_guard(monkeypatch)
@@ -398,19 +433,28 @@ def test_representative_stride_covers_episodes_not_easy_or_hard_frames() -> None
     assert all(item.selection_reason == "" for item in spaced)
 
 
-def test_train_sample_excludes_test_episode_and_guards(
+def test_train_block_with_test_episode_stays_out_of_other_splits(
     tmp_path: Path,
     long_clip: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    workspace = _bind(tmp_path, long_clip, _LONG_EPISODES)
-    frozen = require_frozen(workspace, "pilot", "vid")
-    assert frozen.frozen is True
-    assert any(
-        episode.episode_id == "test-ep" and episode.split is SplitName.test
-        for episode in frozen.episodes
+    workspace = _bind(
+        tmp_path,
+        long_clip,
+        _LONG_BLOCKS,
+        episodes=[dict(_LEFTOVER_TEST_EPISODE)],
     )
-    assert frozen.guards
+    manifest_path = frozen_manifest_path(workspace, "pilot", "vid")
+    manifest_before = manifest_path.read_bytes()
+    frozen = require_frozen(workspace, "pilot", "vid")
+    edges_before = [(block.start_s, block.end_s, block.role) for block in frozen.blocks]
+    assert frozen.frozen is True
+    assert frozen.guards == []
+    assert "excluded_guard" not in manifest_before.decode("utf-8")
+    assert any(
+        item["episode_id"] == "test-ep" and item["split"] == "test"
+        for item in frozen.episodes
+    )
     calls: list[tuple[float, float | None]] = []
     frozen_calls = {"n": 0}
     real_require = sampler_mod.require_frozen
@@ -438,31 +482,36 @@ def test_train_sample_excludes_test_episode_and_guards(
     assert rows
     assert len(rows) == data["written"]["train"]
     assert len(rows) == len({row["source_frame_index"] for row in rows})
-    test_episode = next(episode for episode in frozen.episodes if episode.episode_id == "test-ep")
+    train_block = next(block for block in frozen.blocks if block.role == "train")
+    test_block = next(block for block in frozen.blocks if block.role == "test")
     during_sample = list(calls)
-    test_indexes = _indexes_between(long_clip, test_episode.start_s, test_episode.end_s)
+    test_indexes = _indexes_between(long_clip, test_block.start_s, test_block.end_s)
+    gap_indexes = _indexes_between(long_clip, train_block.end_s, 72.0)
     assert test_indexes
+    assert gap_indexes
     sampled = {row["source_frame_index"] for row in rows}
     assert sampled.isdisjoint(test_indexes)
+    assert sampled.isdisjoint(gap_indexes)
     for row in rows:
         assert row["split"] == "train"
-        assert row["episode_id"] == "train-ep"
         assert row["video_id"] == "vid"
         assert row["image_file"] == f"vid_{row['source_frame_index']}.jpg"
         assert row["selection_reason"] == ""
         assert row["strategy"] == "spaced"
-        assert 0 <= row["source_time_s"] < 60
-        for guard in frozen.guards:
-            assert not (guard.start_s <= row["source_time_s"] < guard.end_s)
+        assert train_block.start_s <= row["source_time_s"] < train_block.end_s
+        assert (
+            _LEFTOVER_TEST_EPISODE["start_s"]
+            <= row["source_time_s"]
+            < _LEFTOVER_TEST_EPISODE["end_s"]
+        )
     ordered = sorted(rows, key=lambda row: row["source_time_s"])
     for earlier, later in pairwise(ordered):
         assert later["source_time_s"] - earlier["source_time_s"] + 1e-3 >= 2.0
     assert during_sample
     for start_s, end_s in during_sample:
         assert end_s is not None
-        assert not _overlaps(start_s, end_s, test_episode.start_s, test_episode.end_s)
-        for guard in frozen.guards:
-            assert not _overlaps(start_s, end_s, guard.start_s, guard.end_s)
+        assert train_block.start_s <= start_s and end_s <= train_block.end_s
+        assert not _overlaps(start_s, end_s, test_block.start_s, test_block.end_s)
     images = Path(data["images_dir"])
     files = sorted(path.name for path in images.glob("*.jpg"))
     assert files == sorted(row["image_file"] for row in rows)
@@ -487,13 +536,98 @@ def test_train_sample_excludes_test_episode_and_guards(
     assert caught.value.code == "frame_not_in_split"
     assert not (images / f"vid_{stolen}.jpg").exists()
 
+    held = sample_frames(workspace, "pilot", plan="content")
+    by_split = {"train": [], "validation": [], "test": []}
+    for row in held.rows:
+        by_split[row.split.value].append(row)
+    assert by_split["train"] and by_split["validation"] and by_split["test"]
+    train_ids = {row.source_frame_index for row in by_split["train"]}
+    val_ids = {row.source_frame_index for row in by_split["validation"]}
+    test_ids = {row.source_frame_index for row in by_split["test"]}
+    assert train_ids.isdisjoint(val_ids)
+    assert train_ids.isdisjoint(test_ids)
+    assert val_ids.isdisjoint(test_ids)
+    for row in by_split["train"]:
+        assert train_block.start_s <= row.source_time_s < train_block.end_s
+    validation_block = next(block for block in frozen.blocks if block.role == "validation")
+    for row in by_split["validation"]:
+        assert validation_block.start_s <= row.source_time_s < validation_block.end_s
+    for row in by_split["test"]:
+        assert test_block.start_s <= row.source_time_s < test_block.end_s
+    outside = gap_indexes | _indexes_between(long_clip, 92.0, test_block.start_s)
+    assert outside.isdisjoint(train_ids | val_ids | test_ids)
+    assert manifest_path.read_bytes() == manifest_before
+    edges_after = [
+        (block.start_s, block.end_s, block.role)
+        for block in require_frozen(workspace, "pilot", "vid").blocks
+    ]
+    assert edges_after == edges_before
+
+
+def test_second_train_piece_is_train_and_gaps_are_unsampled(
+    tmp_path: Path,
+    long_clip: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    blocks = (
+        RoleBlock(start_s=0, end_s=10, role="train"),
+        RoleBlock(start_s=30, end_s=40, role="train"),
+        RoleBlock(start_s=50, end_s=60, role="validation"),
+        RoleBlock(start_s=80, end_s=90, role="test"),
+    )
+    workspace = _bind(tmp_path, long_clip, blocks)
+    manifest_path = frozen_manifest_path(workspace, "pilot", "vid")
+    manifest_before = manifest_path.read_bytes()
+    _arm_propose_guard(monkeypatch)
+    train = sample_frames(workspace, "pilot", split="train", count=40)
+    validation = sample_frames(workspace, "pilot", split="validation", count=20)
+    final = sample_frames(workspace, "pilot", split="test", count=20)
+    train_times = [row.source_time_s for row in train.rows]
+    assert any(0 <= time_s < 10 for time_s in train_times)
+    assert any(30 <= time_s < 40 for time_s in train_times)
+    assert all(row.split is SplitName.train for row in train.rows)
+    assert all(
+        (0 <= row.source_time_s < 10) or (30 <= row.source_time_s < 40) for row in train.rows
+    )
+    train_ids = {row.source_frame_index for row in train.rows}
+    assert train_ids.isdisjoint(row.source_frame_index for row in validation.rows)
+    assert train_ids.isdisjoint(row.source_frame_index for row in final.rows)
+    assert all(50 <= row.source_time_s < 60 for row in validation.rows)
+    assert all(80 <= row.source_time_s < 90 for row in final.rows)
+    gap = _indexes_between(long_clip, 10.0, 30.0)
+    assert gap
+    sampled = train_ids | {row.source_frame_index for row in validation.rows}
+    sampled |= {row.source_frame_index for row in final.rows}
+    assert gap.isdisjoint(sampled)
+    assert manifest_path.read_bytes() == manifest_before
+
+
+def test_windows_follow_blocks_not_leftover_episodes() -> None:
+    frozen = split_mod.FrozenSplit(
+        video_id="vid",
+        blocks=[
+            RoleBlock(start_s=0, end_s=10, role="train"),
+            RoleBlock(start_s=20, end_s=30, role="train"),
+            RoleBlock(start_s=40, end_s=50, role="validation"),
+            RoleBlock(start_s=60, end_s=70, role="test"),
+        ],
+        episodes=[dict(_LEFTOVER_TEST_EPISODE)],
+        content_hash="ab" * 32,
+    )
+    windows = sampler_mod._windows(frozen, SplitName.train)
+    assert [(item.start_s, item.end_s) for item in windows] == [(0.0, 10.0), (20.0, 30.0)]
+    assert sampler_mod._assignment_at(frozen, 25.0) == "train"
+    assert sampler_mod._assignment_at(frozen, 15.0) is None
+    assert sampler_mod._assignment_at(frozen, 45.0) == "validation"
+    assert sampler_mod._in_guard(frozen, 25.0) is False
+
 
 def test_default_spacing_comes_from_config_and_closer_reason_keeps_the_frame(
     tmp_path: Path,
     twin_clip: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    workspace = _bind(tmp_path, twin_clip, _SHORT_EPISODES)
+    workspace = _bind(tmp_path, twin_clip, _SHORT_BLOCKS)
     _arm_propose_guard(monkeypatch)
     spaced = sample_frames(workspace, "pilot", split="train", count=4)
     assert spaced.spacing_s == load_pilot().sample_spacing_s == 2.0
@@ -548,7 +682,7 @@ def test_near_duplicate_identical_frames_both_remain(
     twin_clip: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    workspace = _bind(tmp_path, twin_clip, _SHORT_EPISODES)
+    workspace = _bind(tmp_path, twin_clip, _SHORT_BLOCKS)
     data = _invoke(monkeypatch, workspace, "--split", "train", "--count", "2")
     rows = sorted(data["rows"], key=lambda row: row["source_time_s"])
     assert len(rows) == 2
@@ -573,7 +707,7 @@ def test_diagnostic_plan_does_not_create_test_images(
     long_clip: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    workspace = _bind(tmp_path, long_clip, _LONG_EPISODES)
+    workspace = _bind(tmp_path, long_clip, _LONG_BLOCKS)
     frozen = require_frozen(workspace, "pilot", "vid")
     calls: list[tuple[float, float | None]] = []
     _spy_intervals(monkeypatch, calls)
@@ -603,18 +737,17 @@ def test_diagnostic_plan_does_not_create_test_images(
     train_rows = [row for row in rows if row["split"] == "train"]
     val_rows = [row for row in rows if row["split"] == "validation"]
     assert train_rows and val_rows
-    assert {row["episode_id"] for row in train_rows} == {"train-ep"}
-    assert {row["episode_id"] for row in val_rows} == {"val-ep"}
+    assert {row["episode_id"] for row in train_rows} == {""}
+    assert {row["episode_id"] for row in val_rows} == {""}
     assert {row["strategy"] for row in train_rows} == {"spaced"}
     assert {row["strategy"] for row in val_rows} == {"representative"}
     assert {row["selection_reason"] for row in val_rows} == {"representative"}
-    test_episode = next(episode for episode in frozen.episodes if episode.split is SplitName.test)
-    val_episode = next(
-        episode for episode in frozen.episodes if episode.split is SplitName.validation
-    )
+    train_block = next(block for block in frozen.blocks if block.role == "train")
+    val_block = next(block for block in frozen.blocks if block.role == "validation")
+    test_block = next(block for block in frozen.blocks if block.role == "test")
     during_sample = list(calls)
-    test_indexes = _indexes_between(long_clip, test_episode.start_s, test_episode.end_s)
-    val_indexes = sorted(_indexes_between(long_clip, val_episode.start_s, val_episode.end_s))
+    test_indexes = _indexes_between(long_clip, test_block.start_s, test_block.end_s)
+    val_indexes = sorted(_indexes_between(long_clip, val_block.start_s, val_block.end_s))
     assert test_indexes
     assert len(val_indexes) > 20
     sampled_val = [row["source_frame_index"] for row in val_rows]
@@ -623,20 +756,31 @@ def test_diagnostic_plan_does_not_create_test_images(
     assert sampled_val[-1] == val_indexes[-1]
     assert any(right - left > 1 for left, right in pairwise(sampled_val))
     assert sampled_val != val_indexes[:20]
-    for start_s, end_s in during_sample:
+    opened = {(start_s, end_s) for start_s, end_s in during_sample}
+    block_windows = {
+        (train_block.start_s, train_block.end_s),
+        (val_block.start_s, val_block.end_s),
+    }
+    # The tick pass reads whole blocks; the writer seeks one display span per tick.
+    frame_period_s = 1.0 / _LONG_FPS
+    assert block_windows <= opened
+    for start_s, end_s in opened - block_windows:
         assert end_s is not None
-        assert not _overlaps(start_s, end_s, test_episode.start_s, test_episode.end_s)
-        for guard in frozen.guards:
-            assert not _overlaps(start_s, end_s, guard.start_s, guard.end_s)
+        assert any(left <= start_s and end_s <= right for left, right in block_windows)
+        assert end_s - start_s <= frame_period_s + 1e-6
+    assert not any(
+        _overlaps(start_s, end_s, test_block.start_s, test_block.end_s)
+        for start_s, end_s in opened
+    )
     images = Path(data["images_dir"])
     assert sorted(path.name for path in images.glob("*.jpg")) == sorted(
         row["image_file"] for row in rows
     )
     assert not any(row["split"] == "test" for row in rows)
-    for row in rows:
-        time_s = row["source_time_s"]
-        for guard in frozen.guards:
-            assert not (guard.start_s <= time_s < guard.end_s)
+    for row in train_rows:
+        assert train_block.start_s <= row["source_time_s"] < train_block.end_s
+    for row in val_rows:
+        assert val_block.start_s <= row["source_time_s"] < val_block.end_s
 
 
 @pytest.mark.parametrize(
@@ -654,7 +798,7 @@ def test_plans_use_pilot_counts_and_do_not_invent_frames(
     twin_clip: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    workspace = _bind(tmp_path, twin_clip, _SHORT_EPISODES)
+    workspace = _bind(tmp_path, twin_clip, _SHORT_BLOCKS)
     counts = plan_counts(plan)
     assert (counts.train, counts.validation, counts.test) == expected
     data = _invoke(monkeypatch, workspace, "--plan", plan)
@@ -685,7 +829,7 @@ def test_plan_counts_follow_a_replaced_pilot_config(
     twin_clip: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    workspace = _bind(tmp_path, twin_clip, _SHORT_EPISODES)
+    workspace = _bind(tmp_path, twin_clip, _SHORT_BLOCKS)
 
     def replaced(path: Path | None = None):
         pilot = load_pilot(path)

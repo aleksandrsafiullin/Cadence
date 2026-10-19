@@ -28,6 +28,7 @@ from typing import Any
 
 import pyarrow.parquet as pq
 
+from excavation_lab.datasets.catalog import StoredCatalog, require_project_catalog
 from excavation_lab.errors import CorruptMediaError, LabError, MediaNotFoundError
 from excavation_lab.jobs import (
     get_job,
@@ -143,6 +144,7 @@ def encode_annotated_video(
     toggles: AnnotateToggles | None = None,
     zones: Sequence[ZonePolygon] = (),
     map_path: Path | None = None,
+    titles: Mapping[str, str] | None = None,
 ) -> AnnotatedExport:
     """Annotate the analyzed frames and write a CFR preview.
 
@@ -170,6 +172,7 @@ def encode_annotated_video(
         baseline=baseline,
         toggles=selected,
         zones=zone_list,
+        titles=titles,
     )
     destination = Path(output_path)
     csv_path = destination.with_name("preview_time_map.csv") if map_path is None else Path(map_path)
@@ -300,6 +303,8 @@ def run_export_job(workspace: Path, job_id: str) -> int:
         if get_job(root, project_id, job_id).status != JobStatus.running:
             return 0
         destination = project_directory(root, project_id) / "exports" / run_id / ANNOTATED_VIDEO
+        baseline = run["model_origin"] == _BASELINE
+        catalog = require_project_catalog(root, project_id)
         result = encode_annotated_video(
             video_path=media,
             video_id=str(video["video_id"]),
@@ -308,9 +313,10 @@ def run_export_job(workspace: Path, job_id: str) -> int:
             start_s=start_s,
             end_s=end_s,
             export_fps=float(request["export_fps"]),
-            baseline=run["model_origin"] == _BASELINE,
+            baseline=baseline,
             toggles=_toggles(request),
             zones=_zones(request),
+            titles=_titles(baseline, catalog),
         )
         if get_job(root, project_id, job_id).status != JobStatus.running:
             return 0
@@ -357,6 +363,7 @@ def _annotated_frames(
     baseline: bool,
     toggles: AnnotateToggles,
     zones: Sequence[ZonePolygon],
+    titles: Mapping[str, str] | None = None,
 ) -> list[PreviewFrame]:
     wanted = {int(row["source_frame_index"]): row for row in frames}
     by_index: dict[int, list[Mapping[str, Any]]] = {}
@@ -367,7 +374,7 @@ def _annotated_frames(
         by_index.setdefault(index, []).append(row)
     bucket_points = _bucket_points(detections, tracks)
     pilot = load_pilot()
-    titles = _titles(baseline)
+    shown = _titles(baseline) if titles is None else dict(titles)
     kept: list[PreviewFrame] = []
     first = True
     reader = FrameReader(video_path, video_id=video_id)
@@ -391,7 +398,7 @@ def _annotated_frames(
             frame.image,
             boxes,
             toggles=toggles,
-            titles=titles,
+            titles=shown,
             baseline=baseline,
             burn_baseline_caption=first and baseline,
             trail=trail,
@@ -568,11 +575,14 @@ def _reject_predicted_detections(rows: Sequence[Mapping[str, Any]]) -> None:
             )
 
 
-def _titles(baseline: bool) -> dict[str, str]:
+def _titles(baseline: bool, catalog: StoredCatalog | None = None) -> dict[str, str]:
+    """Baseline keeps the seed titles. A custom run uses the project catalog."""
     if baseline:
+        loaded = load_labels()
+        return {item.name.value: item.title for item in loaded.classes}
+    if catalog is None:
         return {}
-    loaded = load_labels()
-    return {item.name.value: item.title for item in loaded.classes}
+    return {item.name: item.title for item in catalog.classes}
 
 
 def _require_playable(path: Path) -> None:

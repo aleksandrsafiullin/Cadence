@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block main %}
+<div class="lab-label">
+  <h1 class="lab-title">{{ page_title }}</h1>
+  {% if label_ready %}
+  <header class="lab-label-head">
+    <p id="label-video">{{ video_label }}</p>
+    <p id="label-split"><span class="lab-label-split" data-split="{{ split_token }}">{{ split_badge }}</span></p>
+    <p id="label-time">{{ source_time_text }}</p>
+    <p id="label-index">{{ book.label_frame_index }} {{ frame_index }}</p>
+    <p id="label-reviewed-meta"{% if not reviewed_at_text %} hidden{% endif %}>
+      <span>{{ book.label_reviewed_at }}</span>
+      <time id="label-reviewed-at" datetime="{{ reviewed_at_text }}">{{ reviewed_at_text }}</time>
+      <span>{{ book.label_annotator }}</span>
+      <span id="label-reviewed-annotator">{{ frame_annotator }}</span>
+    </p>
+  </header>
+  <p class="lab-caption" id="label-progress">{{ progress_line }}</p>
+  <div class="lab-label-filters">
+    <label class="lab-label" for="label-filter-status">{{ book.label_filter_status }}</label>
+    <select class="lab-select" id="label-filter-status">
+      <option value="all">{{ book.label_filter_all }}</option>
+      <option value="unreviewed">{{ book.label_filter_unreviewed }}</option>
+      <option value="reviewed">{{ book.label_filter_reviewed }}</option>
+      <option value="excluded">{{ book.label_filter_excluded }}</option>
+    </select>
+    <label class="lab-label" for="label-filter-split">{{ book.label_filter_split }}</label>
+    <select class="lab-select" id="label-filter-split">
+      <option value="all">{{ book.label_filter_all_splits }}</option>
+      <option value="train">{{ book.split_name_train }}</option>
+      <option value="validation">{{ book.split_name_validation }}</option>
+      <option value="test">{{ book.split_name_test }}</option>
+    </select>
+  </div>
+  <h2 class="lab-caption" id="label-frames-heading">{{ book.label_frames_heading }}</h2>
+  <ol id="label-strip" class="lab-label-strip"></ol>
+  <form class="lab-form" id="label-annotator-form" method="post" action="/label/annotator">
+    <input type="hidden" name="video" value="{{ selected_video_id }}">
+    <input type="hidden" name="frame" value="{{ frame_index }}">
+    <label class="lab-label" for="label-annotator">{{ book.label_annotator }}</label>
+    <input class="lab-input" id="label-annotator" name="annotator" value="{{ annotator_value }}" autocomplete="nickname">
+    <button type="submit" class="lab-button">{{ book.label_annotator }}</button>
+  </form>
+  <div class="lab-label-work">
+    <div class="lab-label-stage">
+      <div class="lab-label-frame">
+        <img id="label-frame" alt="{{ video_label }}" src="{{ image_url }}" width="{{ image_width }}" height="{{ image_height }}">
+        <canvas id="box-canvas" width="{{ image_width }}" height="{{ image_height }}"></canvas>
+      </div>
+      <p class="lab-caption" id="label-fit">{{ book.label_fit_width_note }}</p>
+    </div>
+    <aside class="lab-label-panel">
+      <ul class="lab-label-classes">
+        {% for item in classes %}
+        <li>
+          <span>{{ item.title }}</span>
+          {% if item.key %}<kbd>{{ item.key }}</kbd>{% endif %}
+          <span class="lab-caption">{{ item.box }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+      <label class="lab-label" for="box-class">{{ book.label_class }}</label>
+      <select class="lab-select" id="box-class">
+        {% for item in classes %}
+        <option value="{{ item.name }}">{{ item.title }}</option>
+        {% endfor %}
+      </select>
+      <p class="lab-caption" id="box-class-hint"></p>
+      <fieldset id="box-visibility">
+        <legend>{{ book.label_visibility }}</legend>
+        <label><input type="radio" name="box-visibility" value="clear" checked> {{ book.label_visibility_clear }}</label>
+        <label><input type="radio" name="box-visibility" value="partial"> {{ book.label_visibility_partial }}</label>
+        <label><input type="radio" name="box-visibility" value="unlabelable"> {{ book.label_visibility_unlabelable }}</label>
+      </fieldset>
+      <p class="lab-caption" id="box-unlabelable-note" hidden>{{ book.label_unlabelable_excludes }}</p>
+      <label class="lab-check" for="box-truncated">
+        <input id="box-truncated" type="checkbox"> {{ book.label_truncated }}
+      </label>
+      <label class="lab-label" for="box-instance">{{ book.label_instance }}</label>
+      <input class="lab-input" id="box-instance" type="text">
+      <label class="lab-label" for="box-note">{{ book.label_box_note }}</label>
+      <textarea class="lab-input" id="box-note" rows="2"></textarea>
+      <label class="lab-label" for="label-frame-note">{{ book.label_note }}</label>
+      <textarea class="lab-input" id="label-frame-note" rows="2">{{ frame_note }}</textarea>
+      <button type="button" class="lab-button" id="box-delete">{{ book.label_delete_box }}</button>
+      <div class="lab-label-status" role="group" aria-label="{{ book.label_review_group }}">
+        <button type="button" class="lab-button lab-button-primary" id="label-mark-reviewed" data-review="reviewed"{% if review_status == "reviewed" %} aria-pressed="true"{% endif %}>{{ book.label_mark_reviewed }}</button>
+        <button type="button" class="lab-button lab-button-secondary" id="label-mark-excluded" data-review="excluded"{% if review_status == "excluded" %} aria-pressed="true"{% endif %}>{{ book.label_mark_excluded }}</button>
+        <button type="button" class="lab-button lab-button-secondary" id="label-mark-unreviewed" data-review="unreviewed"{% if review_status == "unreviewed" %} aria-pressed="true"{% endif %}>{{ book.label_mark_unreviewed }}</button>
+      </div>
+      <p class="lab-caption" id="label-excluded-hint">{{ book.label_excluded_hint }}</p>
+      <p class="lab-caption" id="label-unreviewed-hint">{{ book.label_unreviewed_hint }}</p>
+      <div class="lab-label-suggest">
+        <label class="lab-label" for="label-suggest-bundle">{{ book.label_suggest_model }}</label>
+        <select class="lab-select" id="label-suggest-bundle"{% if not suggestions_allowed %} disabled{% if suggestion_reason %} title="{{ suggestion_reason }}"{% endif %}{% endif %}>
+          {% for item in suggestion_bundles %}
+          <option value="{{ item.model_id }}">{{ item.model_id }}</option>
+          {% endfor %}
+        </select>
+        <button type="button" class="lab-button" id="label-suggest"{% if not suggestions_allowed %} disabled{% endif %}{% if suggestion_reason %} title="{{ suggestion_reason }}"{% endif %}>{{ book.label_suggest_button }}</button>
+        <p class="lab-caption" id="label-suggest-reason"{% if not suggestion_reason %} hidden{% endif %}>{{ suggestion_reason }}</p>
+        <ul id="label-suggestions" class="lab-label-suggestions"></ul>
+        <button type="button" class="lab-button" id="label-suggest-accept-all" disabled title="{{ book.label_suggest_none }}" data-empty="{{ book.label_suggest_none }}">{{ book.label_suggest_accept_all }}</button>
+        <button type="button" class="lab-button" id="label-suggest-reject-all" disabled title="{{ book.label_suggest_none }}" data-empty="{{ book.label_suggest_none }}">{{ book.label_suggest_reject_all }}</button>
+        <p class="lab-caption" id="label-suggest-none">{{ book.label_suggest_none }}</p>
+      </div>
+      <p id="label-status" role="status" data-saved="{{ book.label_saved }}"></p>
+      <p id="label-error" class="lab-alert" role="alert" hidden data-failed="{{ book.label_save_failed }}"></p>
+      <button type="button" class="lab-button" id="label-save">{{ book.label_save }}</button>
+      <div class="lab-label-nav">
+        <a class="lab-button" id="label-prev"{% if prev_href %} href="{{ prev_href }}"{% else %} aria-disabled="true"{% endif %}>{{ book.label_prev }}</a>
+        <a class="lab-button" id="label-next"{% if next_href %} href="{{ next_href }}"{% else %} aria-disabled="true"{% endif %}>{{ book.label_next }}</a>
+      </div>
+      <section id="label-shortcuts" class="lab-label-shortcuts" tabindex="-1">
+        <h2>{{ book.label_shortcuts_title }}</h2>
+        <ul>
+          <li><kbd>1</kbd>–<kbd>9</kbd> {{ book.label_shortcut_class }}</li>
+          <li><kbd>v</kbd> {{ book.label_shortcut_visibility }}</li>
+          <li><kbd>t</kbd> {{ book.label_shortcut_truncated }}</li>
+          <li><kbd>r</kbd> {{ book.label_shortcut_reviewed }}</li>
+          <li><kbd>x</kbd> {{ book.label_shortcut_excluded }}</li>
+          <li><kbd>u</kbd> {{ book.label_shortcut_unreviewed }}</li>
+          <li><kbd>←</kbd> <kbd>→</kbd> {{ book.label_shortcut_nav }}</li>
+          <li><kbd>Delete</kbd> {{ book.label_shortcut_delete }}</li>
+          <li><kbd>?</kbd> {{ book.label_shortcut_help }}</li>
+        </ul>
+      </section>
+    </aside>
+  </div>
+  {% else %}
+  {% if label_error %}
+  <p class="lab-alert" id="label-error" role="alert">{{ label_error }}</p>
+  {% endif %}
+  <p class="lab-empty">{{ label_loading }}</p>
+  {% endif %}
+  <p><a class="lab-link" id="label-back" href="{{ label_back_href }}">{{ label_back_to_data }}</a></p>
+</div>
+<script type="application/json" id="label-state">{{ label_state_json | safe }}</script>
+<script type="application/json" id="label-copy">{{ label_copy_json | safe }}</script>
+<script src="/static/box_labeler.js"></script>
+{% endblock %}

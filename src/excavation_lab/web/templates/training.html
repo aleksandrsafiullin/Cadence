@@ -23,7 +23,7 @@
   {% endif %}
   <form class="lab-form" method="post" action="/training/start">
     <label class="lab-label" for="train-dataset">{{ book.train_dataset }}</label>
-    <select class="lab-select" id="train-dataset" name="dataset_id"{% if not versions %} disabled{% endif %}>
+    <select class="lab-select" id="train-dataset" name="dataset_id"{% if not versions %} disabled{% if not_ready %} title="{{ not_ready }}"{% endif %}{% endif %}>
       {% if not versions %}
       <option value="" disabled selected>{{ book.train_dataset_empty }}</option>
       {% else %}
@@ -70,20 +70,20 @@
       <label class="lab-label" for="train-seed">{{ book.train_seed }}</label>
       <input class="lab-input" id="train-seed" name="seed" type="number" min="0" step="1" value="{{ seed_value }}">
     </details>
-    <button type="submit" class="lab-button" id="train-start"{% if not start_enabled %} disabled{% endif %}>{{ book.train_start }}</button>
+    <button type="submit" class="lab-button" id="train-start"{% if not start_enabled %} disabled{% if blocked_message %} title="{{ blocked_message }}"{% endif %}{% endif %}>{{ book.train_start }}</button>
     <p class="lab-caption">{{ book.train_start_help }}</p>
   </form>
   <form class="lab-form" method="post" action="/training/cancel">
     {% if cancel_job_id %}
     <input type="hidden" name="job_id" value="{{ cancel_job_id }}">
     {% endif %}
-    <button type="submit" class="lab-button" id="train-cancel"{% if not cancel_job_id %} disabled{% endif %}>{{ book.train_cancel }}</button>
+    <button type="submit" class="lab-button" id="train-cancel"{% if not cancel_job_id %} disabled title="{{ book.train_cancel_help }}"{% endif %}>{{ book.train_cancel }}</button>
     <p class="lab-caption">{{ book.train_cancel_help }}</p>
   </form>
   {% if blocked_message %}
   <p class="lab-caption">{{ blocked_message }}</p>
   {% endif %}
-  <div class="lab-alert" data-tone="{{ status_tone }}"{% if poll %} data-job-poll data-status="{{ status_value }}" data-progress-url="jobs/{{ status_job_id }}/progress"{% endif %}>
+  <div class="lab-alert" data-tone="{{ status_tone }}"{% if status_job_id %} data-job-poll data-status="{{ status_value }}" data-progress-url="jobs/{{ status_job_id }}/progress"{% endif %}>
     <span class="lab-status-mark"></span>
     <span id="train-status" data-job-line>{{ status_line }}</span>
   </div>

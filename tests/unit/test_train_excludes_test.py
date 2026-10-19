@@ -19,6 +19,7 @@ from typer.testing import CliRunner
 
 from excavation_lab import jobs, storage
 from excavation_lab.cli import app, train_command
+from excavation_lab.datasets.catalog import list_catalogs
 from excavation_lab.models import train as train_mod
 from excavation_lab.models.augment import EVAL_AUGMENTATION, MILD_PRESET
 from excavation_lab.models.train import (
@@ -86,7 +87,8 @@ def _dataset(root: Path, *, train: int, valid: int, test: int = 1) -> Path:
 
 def _ready_workspace(tmp_path: Path, *, train: int = 1, valid: int = 1) -> tuple[Path, str, Path]:
     workspace = tmp_path / "workspace"
-    storage.create_project("pilot", workspace)
+    list_catalogs(workspace)
+    storage.create_project("pilot", workspace, catalog_id="excavation")
     dataset = _dataset(workspace, train=train, valid=valid)
     dataset_id = "ds1"
     with storage.connect(storage.project_sqlite(workspace, "pilot")) as connection:
@@ -381,7 +383,12 @@ def test_failed_backend_is_stored_once(
         assert record.error_code is not None
         assert "RuntimeError" in record.error_code
         assert "mps backend failed: simulated" in record.error_code
-        calls = _wait_calls(jobs.run_directory(workspace, "pilot", job_id))
+        run_dir = jobs.run_directory(workspace, "pilot", job_id)
+        progress = json.loads((run_dir / jobs.PROGRESS_FILENAME).read_text(encoding="utf-8"))
+        assert progress["status"] == JobStatus.failed.value
+        assert isinstance(progress["error"], str)
+        assert "mps backend failed: simulated" in progress["error"]
+        calls = _wait_calls(run_dir)
         assert len(calls) == 1
         assert list(workspace.rglob("*.pth")) == []
         log = (jobs.run_directory(workspace, "pilot", job_id) / "train.log").read_text(encoding="utf-8")
@@ -417,6 +424,64 @@ def test_metrics_use_validation_map_and_mark_a_small_set_unstable(
         assert "0.75" not in text
     finally:
         _cancel_active(workspace)
+
+
+def test_reload_fake_omits_map_and_marks_the_checkpoint_synthetic(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from excavation_lab.models.train_config import METRIC_ROLE_SYNTHETIC_WIRING
+    from excavation_lab.ui import copy as ui_copy
+
+    monkeypatch.setenv(train_mod.FAKE_TRAINER_ENV, "reload")
+    workspace, dataset_id, _dataset_dir = _ready_workspace(tmp_path)
+    try:
+        started = _invoke(workspace, dataset_id, "smoke")
+        assert started.exit_code == 0, started.output
+        job_id = json.loads(started.stdout)["data"]["job_id"]
+        record = _wait_status(workspace, job_id, {JobStatus.completed, JobStatus.failed})
+        assert record.status == JobStatus.completed, record.error_code
+        run_dir = jobs.run_directory(workspace, "pilot", job_id)
+        text = (run_dir / "validation_metrics.json").read_text(encoding="utf-8")
+        metrics = json.loads(text)
+        assert metrics["box_map_50_95"] is None
+        assert metrics["bucket_ap"] is None
+        assert metrics["synthetic"] is True
+        assert metrics["metric_role"] == METRIC_ROLE_SYNTHETIC_WIRING
+        assert "0.5" not in text
+        assert "0.25" not in text
+        assert "0.125" not in text
+        import torch
+
+        checkpoint = torch.load(run_dir / "weights.pth", map_location="cpu", weights_only=False)
+        assert checkpoint["synthetic"] is True
+        assert checkpoint["metric_role"] == METRIC_ROLE_SYNTHETIC_WIRING
+        cards = list(workspace.rglob("model_card.md"))
+        assert len(cards) == 1
+        card = cards[0].read_text(encoding="utf-8")
+        assert ui_copy.catalog("ru").synthetic_card_use in card
+        assert ui_copy.NOT_CALCULATED in card
+        assert "0.5" not in card
+        config = json.loads(cards[0].with_name("model_config.json").read_text(encoding="utf-8"))
+        assert config["origin"] == "custom"
+        assert config["synthetic"] is True
+        assert config["metric_role"] == METRIC_ROLE_SYNTHETIC_WIRING
+    finally:
+        _cancel_active(workspace)
+
+
+def test_production_modules_do_not_import_the_fake_trainer() -> None:
+    root = Path(train_mod.__file__).resolve().parents[1]
+    banned = ("_fake_trainer", "FAKE_TRAINER_ENV")
+    offenders: list[str] = []
+    for path in root.rglob("*.py"):
+        if path.name == "train.py":
+            continue
+        text = path.read_text(encoding="utf-8")
+        for name in banned:
+            if name in text:
+                offenders.append(f"{path.name}:{name}")
+    assert offenders == []
 
 
 def test_failed_mps_does_not_restart_on_cpu(

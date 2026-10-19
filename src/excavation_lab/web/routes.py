@@ -110,6 +110,7 @@ def video_context(
         "end_value": bound_text(state.interval_end),
         "selected_video_id": state.selected_id,
         "blocked": state.blocked,
+        "blocked_message": book.job_already_running if state.blocked else "",
         "baseline_button": book.baseline_button,
         "baseline_caption": book.baseline_caption,
         "baseline_help": book.baseline_help,

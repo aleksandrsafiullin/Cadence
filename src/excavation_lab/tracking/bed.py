@@ -17,7 +17,7 @@ truck is not rebuilt. A bed box is not a dump and not 3D contact.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 
 from excavation_lab.models.adapter import FrameDetections
@@ -34,6 +34,16 @@ from excavation_lab.tracking.vehicles import HAUL_TRUCK, TRUCK_BED
 CONTINUITY_BONUS = 0.15
 # Match a bed to its own previous box in bed-lengths. Not a parent gate.
 _MAX_BED_MATCH_DISTANCE = 2.0
+
+
+# Both names are required. A catalog with only one of them does not link a bed.
+_BED_RULE = frozenset({"truck_bed", "haul_truck"})
+
+
+def _bed_rule(names: frozenset[str] | None) -> bool:
+    if names is None:
+        return True
+    return _BED_RULE <= names
 
 
 def bed_containment(
@@ -166,24 +176,36 @@ class BedTruckAssociator:
         ambiguity_margin: float,
         detection_floor: float,
         display_threshold: float,
+        class_names: Collection[str] | None = None,
     ) -> None:
         self.min_containment = _require_containment(min_containment)
         self.ambiguity_margin = _require_margin(ambiguity_margin)
         self.detection_floor = _require_unit("detection_floor", detection_floor)
         self.display_threshold = _require_unit("display_threshold", display_threshold)
+        self.class_names = None if class_names is None else frozenset(class_names)
         self._tracks: list[_Track] = []
         self._next_local_id = 0
         self.last_frame: BedFrame | None = None
 
     @classmethod
-    def from_pilot(cls, pilot: PilotConfig | None = None) -> BedTruckAssociator:
+    def from_pilot(
+        cls,
+        pilot: PilotConfig | None = None,
+        *,
+        class_names: Collection[str] | None = None,
+    ) -> BedTruckAssociator:
         loaded = load_pilot() if pilot is None else pilot
         return cls(
             min_containment=loaded.bed.min_containment,
             ambiguity_margin=loaded.bed.ambiguity_margin,
             detection_floor=loaded.detection_floor,
             display_threshold=loaded.display_threshold,
+            class_names=class_names,
         )
+
+    def enabled(self) -> bool:
+        """False unless the name set contains ``truck_bed`` and ``haul_truck``."""
+        return _bed_rule(self.class_names)
 
     def reset(self) -> None:
         """Drop the copied parents and the last frame.
@@ -217,6 +239,11 @@ class BedTruckAssociator:
         if not isinstance(video_id, str) or not video_id:
             raise ValueError("video_id is required")
         stamp = float(source_time_s)
+        if not self.enabled():
+            self._tracks.clear()
+            frame = BedFrame(source_time_s=stamp, links=())
+            self.last_frame = frame
+            return frame
         anchors = _anchors(trucks)
         beds = _bed_detections(detections, detection_floor=self.detection_floor)
         matched, unmatched_dets, _unmatched = _match(self._tracks, beds)

@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import json
 import math
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pyarrow as pa
@@ -18,7 +19,8 @@ from excavation_lab import storage
 from excavation_lab.cli import app
 from excavation_lab.datasets import active_learning as active_mod
 from excavation_lab.datasets import splits as split_mod
-from excavation_lab.datasets.episodes import EpisodeSpec, add_episode
+from excavation_lab.datasets.blocks import RoleBlock
+from excavation_lab.datasets.catalog import list_catalogs
 from excavation_lab.datasets.sampler import (
     _ACTIVE_REASONS,
     SampleResult,
@@ -28,9 +30,8 @@ from excavation_lab.datasets.sampler import (
 from excavation_lab.datasets.splits import (
     freeze_split,
     frozen_manifest_path,
-    propose_split,
     require_frozen,
-    write_proposal,
+    write_blocks,
 )
 from excavation_lab.datasets.zones import load_view_zones_file
 from excavation_lab.errors import LabError
@@ -50,10 +51,10 @@ write_synthetic_mp4 = _SYNTHETIC.write_synthetic_mp4
 
 _RUNNER = CliRunner()
 _MODEL = "model-a"
-_EPISODES = (
-    EpisodeSpec("train-ep", "vid", "g-train", 0, 60, "погрузка"),
-    EpisodeSpec("val-ep", "vid", "g-val", 72, 92, "погрузка"),
-    EpisodeSpec("test-ep", "vid", "g-test", 104, 124, "погрузка"),
+_BLOCKS = (
+    RoleBlock(start_s=0, end_s=60, role="train"),
+    RoleBlock(start_s=72, end_s=92, role="validation"),
+    RoleBlock(start_s=104, end_s=124, role="test"),
 )
 _FRAME = 1000
 _RIGHT_ZONE = """
@@ -98,16 +99,14 @@ def _forbid_propose(*_args: object, **_kwargs: object) -> None:
 
 def _freeze(tmp_path: Path, clip: Path | None = None) -> Path:
     workspace = tmp_path / "workspace"
-    storage.create_project("pilot", workspace)
+    list_catalogs(workspace)
+    storage.create_project("pilot", workspace, catalog_id="excavation")
     if clip is None:
         storage.insert_video(workspace, "pilot", "vid", name="pilot")
     else:
         storage.replace_extra_roots(workspace, "pilot", [clip.parent])
         storage.insert_video(workspace, "pilot", "vid", path=clip, name=clip.name)
-    for episode in _EPISODES:
-        add_episode(workspace, "pilot", episode)
-    proposal = propose_split("vid", list(_EPISODES))
-    path = write_proposal(workspace, "pilot", proposal)
+    path = write_blocks(workspace, "pilot", "vid", list(_BLOCKS))
     freeze_split(workspace, "pilot", path)
     return workspace
 
@@ -302,10 +301,10 @@ def test_shown_split_does_not_treat_a_missing_role_as_train(tmp_path: Path) -> N
     frozen = require_frozen(workspace, "pilot", "vid")
     assert _shown_split(frozen, "train-ep", 10.0) == "train"
     assert _shown_split(frozen, None, 10.0) == "train"
-    assert _shown_split(frozen, "test-ep", 10.0) == "test"
+    assert _shown_split(frozen, "test-ep", 10.0) == "train"
     assert _shown_split(frozen, "train-ep", 110.0) == "test"
     assert _shown_split(frozen, "train-ep", 80.0) == "validation"
-    assert _shown_split(frozen, "train-ep", 65.0) == "excluded_guard"
+    assert _shown_split(frozen, "train-ep", 65.0) == "unknown"
     assert _shown_split(frozen, "train-ep", 124.0) == "unknown"
     assert _shown_split(frozen, "train-ep", 200.0) == "unknown"
 
@@ -459,9 +458,10 @@ def test_selector_keeps_train_failures_and_uses_jump_norm(tmp_path: Path) -> Non
     assert 10 not in by_index
     assert by_index[11].selection_reason == "ambiguous_bed"
     assert 12 not in by_index
+    assert by_index[13].selection_reason == "low_confidence"
     assert by_index[21].selection_reason == "ambiguous_bed"
     assert by_index[22].selection_reason == "false_positive"
-    for excluded in (13, 14, 15, 16, 17, 18, 19, 20, 23):
+    for excluded in (14, 15, 16, 17, 18, 19, 20, 23):
         assert excluded not in by_index
     assert all(pick.model_version == _MODEL for pick in selected.picks)
     assert selected.reason_reports == {
@@ -733,9 +733,9 @@ def test_command_samples_train_only_and_leaves_the_manifest(
     assert unzoned[0] not in by_index
     assert by_index[bed[0]]["selection_reason"] == "ambiguous_bed"
     assert by_index[positive[0]]["selection_reason"] == "false_positive"
+    assert by_index[contradict[0]]["selection_reason"] == "low_confidence"
     assert negative[0] not in by_index
     excluded = [
-        contradict[0],
         test_low[0],
         test_jump_a[0],
         test_jump_b[0],
@@ -751,7 +751,7 @@ def test_command_samples_train_only_and_leaves_the_manifest(
     assert {row["selection_reason"] for row in rows} == set(active_mod.ACTIVE_REASONS)
     for row in rows:
         assert row["split"] == "train"
-        assert row["episode_id"] == "train-ep"
+        assert row["episode_id"] == ""
         assert row["strategy"] == "active"
         assert row["model_version"] == _MODEL
         assert row["video_id"] == "vid"
@@ -828,9 +828,7 @@ def test_custom_bundle_without_detections_does_not_synthesize(
     workspace = _freeze(tmp_path)
     manifest = frozen_manifest_path(workspace, "pilot", "vid")
     before = manifest.read_bytes()
-    weights = storage.project_directory(workspace, "pilot") / "models" / _MODEL / "weights.pth"
-    weights.parent.mkdir(parents=True)
-    weights.write_bytes(b"not-a-real-checkpoint")
+    weights = _store_weights(workspace, _MODEL, b"not-a-real-checkpoint")
     monkeypatch.setattr(split_mod, "propose_split", _forbid_propose)
     result = _invoke(
         workspace,
@@ -917,9 +915,7 @@ def test_match_file_needs_a_bundle_and_then_keeps_only_train(
     assert list(project_dir.rglob("*.jpg")) == []
     assert manifest.read_bytes() == before
 
-    weights = project_dir / "models" / _MODEL / "weights.pth"
-    weights.parent.mkdir(parents=True)
-    weights.write_bytes(b"not-a-real-checkpoint")
+    weights = _store_weights(workspace, _MODEL, b"not-a-real-checkpoint")
     result = _invoke(
         workspace,
         "--split",
@@ -938,3 +934,204 @@ def test_match_file_needs_a_bundle_and_then_keeps_only_train(
     assert manifest.read_bytes() == before
     assert weights.read_bytes() == b"not-a-real-checkpoint"
     assert list(project_dir.rglob("_annotations.coco.json")) == []
+
+
+    assert list(project_dir.rglob("_annotations.coco.json")) == []
+
+
+def test_foreign_catalog_skips_bucket_and_bed_reasons(tmp_path: Path) -> None:
+    workspace = _freeze(tmp_path)
+    frozen = require_frozen(workspace, "pilot", "vid")
+    pilot = load_pilot()
+    detections = [
+        _det(
+            9,
+            26.0,
+            class_name="excavator_body",
+            class_id=0,
+            view_id="pit",
+            **_box(650, 400, 850, 600),
+        ),
+        _det(
+            11,
+            30.0,
+            class_name="truck_bed",
+            class_id=3,
+            observation_state="ambiguous",
+            score=0.95,
+        ),
+        _det(5, 18.0, score=0.2, observation_state="weak", class_name="bucket"),
+    ]
+    before = [dict(row) for row in detections]
+    frames = [
+        _status(9, 26.0, bucket="missing", view_id="pit"),
+        _status(11, 30.0),
+        _status(5, 18.0),
+    ]
+    zone_path = tmp_path / "pit.yaml"
+    zone_path.write_text(_RIGHT_ZONE, encoding="utf-8")
+    zones = {"pit": load_view_zones_file(zone_path)}
+    kwargs = {
+        "video_id": "vid",
+        "model_id": _MODEL,
+        "detections": detections,
+        "frame_rows": frames,
+        "track_rows": [
+            {
+                "run_id": "run-a",
+                "track_id": "bed-1",
+                "class_name": "truck_bed",
+                "source_time_s": 30.0,
+                "state": "ambiguous",
+                "identity_uncertain": True,
+                "model_version": _MODEL,
+            }
+        ],
+        "false_positives": [],
+        "zones_by_view": zones,
+        "video_view_id": None,
+        "jump_norm": pilot.jump_norm,
+        "detection_floor": pilot.detection_floor,
+        "display_threshold": pilot.display_threshold,
+    }
+    foreign = active_mod.select_train_frames(
+        frozen,
+        class_names=frozenset({"shovel"}),
+        **kwargs,
+    )
+    reasons = {pick.selection_reason for pick in foreign.picks}
+    assert "bucket_missing_in_working_area" not in reasons
+    assert "ambiguous_bed" not in reasons
+    assert "bucket_missing_in_working_area" not in foreign.reason_reports
+    assert "low_confidence" in reasons
+    assert detections == before
+    kept = active_mod.select_train_frames(
+        frozen,
+        class_names=frozenset({"bucket", "truck_bed"}),
+        **kwargs,
+    )
+    kept_reasons = {pick.selection_reason for pick in kept.picks}
+    assert "bucket_missing_in_working_area" in kept_reasons
+    assert "ambiguous_bed" in kept_reasons
+
+
+def test_sample_active_passes_the_project_catalog(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = _freeze(tmp_path)
+    seen: dict[str, object] = {}
+
+    def evidence(*_args: object, **_kwargs: object) -> active_mod._Evidence:
+        return active_mod._Evidence((), (), (), (), 1, 0)
+
+    def capture(*_args: object, **kwargs: object) -> active_mod.ActiveSelection:
+        seen["class_names"] = kwargs.get("class_names")
+        return active_mod.ActiveSelection(picks=(), reason_reports={})
+
+    monkeypatch.setattr(active_mod, "_load_evidence", evidence)
+    monkeypatch.setattr(active_mod, "select_train_frames", capture)
+    active_mod.sample_active(
+        workspace,
+        "pilot",
+        model_id=_MODEL,
+        video_id="vid",
+        split="train",
+        count=1,
+    )
+    assert seen["class_names"] == frozenset(
+        {"excavator_body", "bucket", "haul_truck", "truck_bed"}
+    )
+    active_mod.sample_active(
+        workspace,
+        "pilot",
+        model_id="baseline_coco",
+        video_id="vid",
+        split="train",
+        count=1,
+    )
+    assert seen["class_names"] == frozenset()
+
+
+def test_active_reports_a_tick_that_did_not_decode_as_shortfall(
+    tmp_path: Path,
+    long_clip: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import dataclasses
+
+    workspace = _freeze(tmp_path, long_clip)
+    train = _between(_clock(long_clip), 2.0, 40.0)
+    chosen = [train[0], train[6], train[12], train[18]]
+    victim = chosen[2][0]
+    picks = tuple(
+        active_mod.ActivePick(
+            video_id="vid",
+            source_frame_index=index,
+            source_time_s=time_s,
+            selection_reason="low_confidence",
+            model_version=_MODEL,
+        )
+        for index, time_s in chosen
+    )
+
+    def evidence(*_args: object, **_kwargs: object) -> active_mod._Evidence:
+        return active_mod._Evidence((), (), (), (), 1, 0)
+
+    def selection(*_args: object, **_kwargs: object) -> active_mod.ActiveSelection:
+        return active_mod.ActiveSelection(picks=picks, reason_reports={})
+
+    monkeypatch.setattr(active_mod, "_load_evidence", evidence)
+    monkeypatch.setattr(active_mod, "select_train_frames", selection)
+    original = FrameReader.iterate
+
+    def blanked(self: FrameReader, start_s: float = 0.0, end_s: float | None = None):
+        # Only the per-tick seek loses pixels; the tick pass still lists the frame.
+        per_tick = end_s is not None and end_s - start_s < 1.0
+        for frame in original(self, start_s, end_s):
+            if per_tick and frame.source_frame_index == victim:
+                yield dataclasses.replace(frame, image=None)
+            else:
+                yield frame
+
+    monkeypatch.setattr(FrameReader, "iterate", blanked)
+    result = active_mod.sample_active(
+        workspace,
+        "pilot",
+        model_id=_MODEL,
+        video_id="vid",
+        split="train",
+        count=None,
+    )
+    assert result.decode_failed == [victim]
+    assert result.requested.train == 4
+    assert result.written.train == 3
+    assert result.shortfall.train == 1
+    assert victim not in {row.source_frame_index for row in result.rows}
+    assert {row.strategy for row in result.rows} == {"active"}
+    assert result.tick_pass == "decode"
+    assert result.tick_pass_reason is not None
+    assert not (Path(result.images_dir) / f"vid_{victim}.jpg").exists()
+    summary = format_sample_summary(result)
+    assert "decode_failed" in summary
+    assert str(victim) in summary
+    manifest = json.loads(Path(result.manifest_path).read_text(encoding="utf-8"))
+    assert manifest["decode_failed"] == [victim]
+    assert manifest["shortfall"]["train"] == 1
+
+
+def _store_weights(workspace: Path, model_id: str, payload: bytes) -> Path:
+    directory = workspace / "weights" / model_id
+    directory.mkdir(parents=True)
+    weights = directory / "weights.pth"
+    weights.write_bytes(payload)
+    with storage.connect(storage.project_sqlite(workspace, "pilot")) as connection:
+        connection.execute(
+            """
+            INSERT INTO model_versions (
+                model_id, project_id, dataset_id, variant, path, created_at
+            ) VALUES (?, 'pilot', NULL, 'nano', ?, ?)
+            """,
+            (model_id, str(directory.resolve()), datetime.now(UTC).isoformat()),
+        )
+    return weights

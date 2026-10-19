@@ -1,8 +1,8 @@
 """Sample frames from a frozen split.
 
 The selector reads ``require_frozen`` and does not build a new split.
-Validation and test use an even stride across episodes. A perceptual hash
-may mark a near-duplicate; that row is still written.
+Windows are the operator role blocks. A perceptual hash may mark a
+near-duplicate; that row is still written.
 """
 
 from __future__ import annotations
@@ -21,9 +21,15 @@ import cv2
 import numpy as np
 from pydantic import Field, model_validator
 
+from excavation_lab.datasets.blocks import assignment_at as role_at
 from excavation_lab.datasets.splits import FrozenSplit, require_frozen
-from excavation_lab.errors import LabError, MediaNotFoundError, TimebaseError
-from excavation_lab.media.reader import FrameReader, ReadFrame
+from excavation_lab.errors import (
+    LabError,
+    MediaNotFoundError,
+    TimebaseError,
+    VfrSamplingUnsupportedError,
+)
+from excavation_lab.media.reader import FrameReader, PtsTick, ReadFrame
 from excavation_lab.schemas import (
     DecodeStatus,
     SplitCounts,
@@ -36,7 +42,14 @@ from excavation_lab.storage import connect, get_video, project_directory, projec
 
 StrategyName = Literal["spaced", "representative", "active"]
 PlanName = Literal["diagnostic", "content", "expanded"]
+TickPassName = Literal["pts", "decode"]
 
+# Version 2 rows carry ``source_pts`` and ``time_base`` from the decoded frame.
+# A version 1 manifest (written before that) reads back with ``None`` there.
+SAMPLE_SCHEMA_VERSION = 2
+_TIME_BASE_PATTERN = r"^[1-9][0-9]*/[1-9][0-9]*$"
+# Probe r_frame_rate and avg_frame_rate agree within this: the PTS-only pass may try.
+_CFR_FPS_TOLERANCE = 1e-3
 _SPACING_TOLERANCE_S = 1e-3
 _NEAR_DUPLICATE_HAMMING = 8
 _JPEG_QUALITY = 95
@@ -52,6 +65,10 @@ _REJECTED_STRATEGIES = {
     "easiest": "Отбор самых удобных кадров не выполняется.",
     "hardest": "Отбор самых сложных кадров не выполняется.",
 }
+_PROBE_NOT_CFR = (
+    "Частота кадров по ffprobe не постоянная или не известна "
+    "(fps_nominal и fps_average расходятся)."
+)
 _ACTIVE_REASONS = frozenset(
     {
         "low_confidence",
@@ -90,6 +107,14 @@ class SampleRow(StrictModel):
     model_version: str | None = None
     near_duplicate_warning: str | None = None
     near_duplicate_of: int | None = Field(default=None, ge=0)
+    source_pts: int | None = Field(default=None, ge=0)
+    time_base: str | None = Field(default=None, pattern=_TIME_BASE_PATTERN)
+
+    @model_validator(mode="after")
+    def pts_and_time_base_together(self) -> Self:
+        if (self.source_pts is None) != (self.time_base is None):
+            raise ValueError("source_pts and time_base are set together")
+        return self
 
     @model_validator(mode="after")
     def jpeg_name_and_warning(self) -> Self:
@@ -132,6 +157,20 @@ class SampleResult(VersionedModel):
     manifest_path: str = Field(min_length=1)
     images_dir: str = Field(min_length=1)
     reason_reports: dict[str, str] = Field(default_factory=dict)
+    # Legacy manifests have no field and read back as 1.
+    sample_schema_version: int = Field(default=1, ge=1, le=SAMPLE_SCHEMA_VERSION)
+    # Ticks that were selected and could not be decoded. They count as shortfall.
+    decode_failed: list[int] = Field(default_factory=list)
+    # How ticks were listed: demuxed PTS or a full decode. ``None`` on legacy manifests.
+    tick_pass: TickPassName | None = None
+    # Why the PTS pass was not used. Set only with ``tick_pass == "decode"``.
+    tick_pass_reason: str | None = None
+
+    @model_validator(mode="after")
+    def tick_pass_reason_only_for_decode(self) -> Self:
+        if self.tick_pass_reason is not None and self.tick_pass != "decode":
+            raise ValueError("tick_pass_reason explains a decode pass")
+        return self
 
     @model_validator(mode="after")
     def counts_match_rows(self) -> Self:
@@ -146,6 +185,8 @@ class SampleResult(VersionedModel):
             tallies[row.split.value] += 1
             if getattr(self.requested, row.split.value) == 0:
                 raise ValueError("row belongs to a split that was not requested")
+            if self.sample_schema_version >= 2 and row.source_pts is None:
+                raise ValueError("sample_schema_version 2 rows carry source_pts")
         for name in ("train", "validation", "test"):
             requested = getattr(self.requested, name)
             written = getattr(self.written, name)
@@ -154,6 +195,13 @@ class SampleResult(VersionedModel):
                 raise ValueError("written count does not match rows")
             if written + shortfall != requested:
                 raise ValueError("shortfall must be requested minus written")
+        failed = list(self.decode_failed)
+        if any(isinstance(item, bool) or item < 0 for item in failed):
+            raise ValueError("decode_failed holds source frame indexes")
+        if len(failed) != len(set(failed)):
+            raise ValueError("decode_failed repeats a frame")
+        if seen.intersection(failed):
+            raise ValueError("a written frame is not decode_failed")
         return self
 
 
@@ -164,6 +212,9 @@ class FrameTick:
     source_time_s: float
     episode_id: str
     split: SplitName
+    # Known from the collecting pass. ``None`` only for a tick built without one.
+    source_pts: int | None = None
+    span_end_s: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,6 +227,8 @@ class SelectedTick:
     selection_reason: str
     strategy: StrategyName
     model_version: str | None = None
+    source_pts: int | None = None
+    span_end_s: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +244,33 @@ class _Encoded:
     image_sha256: str
     image_file: str
     phash: int
+    source_pts: int
+    time_base: str
+
+
+@dataclass(frozen=True, slots=True)
+class TickPass:
+    """Ticks of one split plus how they were listed.
+
+    ``reason`` is the refusal text when the PTS-only pass was wanted and
+    the demux refused, or the probe reason when it was not attempted.
+    """
+
+    ticks: list[FrameTick]
+    used_pts: bool
+    reason: str | None = None
+
+    @property
+    def name(self) -> TickPassName:
+        return "pts" if self.used_pts else "decode"
+
+
+@dataclass(frozen=True, slots=True)
+class _Written:
+    """JPEGs that were written plus the ticks whose frame did not decode."""
+
+    encoded: list[_Encoded]
+    decode_failed: list[int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,6 +417,9 @@ def sample_frames(
     reader = FrameReader(media_path, video_id=resolved_id)
     chosen: list[SelectedTick] = []
     windows_by_split: dict[SplitName, list[_Window]] = {}
+    # One refusal switches every later split to decoding as well.
+    prefer_pts = probe_is_cfr(video)
+    pass_reason: str | None = None if prefer_pts else _PROBE_NOT_CFR
     for split_name in (SplitName.train, SplitName.validation, SplitName.test):
         wanted = request.counts[split_name]
         # Zero is the plan. Do not fill test from validation or train.
@@ -344,9 +427,18 @@ def sample_frames(
             continue
         windows = _windows(frozen, split_name)
         windows_by_split[split_name] = windows
-        ticks = _collect_ticks(reader, frozen, split_name, windows)
+        collected = _collect_ticks(
+            reader,
+            frozen,
+            split_name,
+            windows,
+            prefer_pts=prefer_pts,
+        )
+        prefer_pts = collected.used_pts
+        if collected.reason is not None:
+            pass_reason = collected.reason
         picked = select_ticks(
-            ticks,
+            collected.ticks,
             count=wanted,
             spacing_s=request.spacing_s,
             strategy=request.strategies[split_name],
@@ -368,8 +460,8 @@ def sample_frames(
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     if chosen:
         images_dir.mkdir(parents=True, exist_ok=True)
-    encoded = _write_chosen(reader, windows_by_split, chosen, images_dir)
-    rows = _rows_with_warnings(encoded)
+    outcome = _write_chosen(reader, windows_by_split, chosen, images_dir)
+    rows = _rows_with_warnings(outcome.encoded)
     requested = _split_counts(request.counts)
     written, shortfall = _written_counts(requested, rows)
     result = SampleResult(
@@ -384,6 +476,10 @@ def sample_frames(
         rows=rows,
         manifest_path=str(manifest_path),
         images_dir=str(images_dir),
+        sample_schema_version=SAMPLE_SCHEMA_VERSION,
+        decode_failed=outcome.decode_failed,
+        tick_pass="pts" if prefer_pts else "decode",
+        tick_pass_reason=None if prefer_pts else pass_reason,
     )
     manifest_path.write_text(
         json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n",
@@ -408,6 +504,18 @@ def format_sample_summary(result: SampleResult) -> str:
         line("test", "test"),
         "Записаны только прочитанные кадры.",
     ]
+    if result.decode_failed:
+        failed = ", ".join(str(index) for index in result.decode_failed)
+        lines.append(
+            f"decode_failed: кадры {failed} не декодированы и не записаны. "
+            "Подставной кадр не подставляется."
+        )
+    if result.tick_pass == "decode":
+        reason = result.tick_pass_reason or ""
+        lines.append(
+            f"Отбор по PTS без декодирования не выполнен. {reason} "
+            "Кадры перечислены декодированием."
+        )
     if result.reason_reports.get("bucket_missing_in_working_area") == "zone_missing":
         lines.append("Кадры без полигона рабочей зоны пропущены: zone_missing.")
     return "\n".join(lines)
@@ -594,22 +702,25 @@ def _media_path(stored: object) -> Path:
 
 
 def _windows(frozen: FrozenSplit, split: SplitName) -> list[_Window]:
-    if frozen.episodes:
-        episodes = [
-            episode for episode in frozen.episodes if episode.split == split
-        ]
-        episodes.sort(key=lambda episode: (episode.start_s, episode.episode_id))
-        return [
-            _Window(episode.episode_id, episode.start_s, episode.end_s)
-            for episode in episodes
-        ]
-    # Technical split: blocks have no operator episode. Spacing stays inside the block.
-    windows: list[_Window] = []
-    for block in frozen.blocks:
-        if block.role != split.value:
-            continue
-        windows.append(_Window("", block.start_s, block.end_s))
-    return windows
+    chosen = [block for block in frozen.blocks if block.role == split.value]
+    chosen.sort(key=lambda block: (block.start_s, block.end_s))
+    return [_Window("", block.start_s, block.end_s) for block in chosen]
+
+
+def probe_is_cfr(video: Mapping[str, object]) -> bool:
+    """Probe says one rate: ``fps_nominal`` and ``fps_average`` agree within 1e-3.
+
+    This only allows the PTS-only tick pass to try. The pass itself still
+    refuses when demuxed packet durations differ. Missing rates stay unknown.
+    """
+    nominal = video.get("fps_nominal")
+    average = video.get("fps_average")
+    for value in (nominal, average):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return False
+        if not math.isfinite(float(value)) or float(value) <= 0:
+            return False
+    return abs(float(nominal) - float(average)) <= _CFR_FPS_TOLERANCE
 
 
 def _collect_ticks(
@@ -617,8 +728,47 @@ def _collect_ticks(
     frozen: FrozenSplit,
     split: SplitName,
     windows: Sequence[_Window],
+    *,
+    prefer_pts: bool = False,
+) -> TickPass:
+    """Ticks inside the windows and whether the PTS-only pass was used.
+
+    With ``prefer_pts`` the ticks come from demuxed PTS without decoding. A
+    ``vfr_sampling_unsupported`` refusal falls back to decoding every frame
+    and keeps the refusal text as ``reason``. Frame images are not kept in
+    either case.
+    """
+    reason: str | None = None
+    if prefer_pts:
+        try:
+            return TickPass(_collect_pts_ticks(reader, frozen, split, windows), True)
+        except VfrSamplingUnsupportedError as exc:
+            reason = exc.message
+    return TickPass(_collect_decoded_ticks(reader, frozen, split, windows), False, reason)
+
+
+def _collect_pts_ticks(
+    reader: FrameReader,
+    frozen: FrozenSplit,
+    split: SplitName,
+    windows: Sequence[_Window],
 ) -> list[FrameTick]:
-    """Stream each episode. Frame images are not kept."""
+    found: dict[int, FrameTick] = {}
+    for window in windows:
+        for pts_tick in reader.iterate_pts(window.start_s, window.end_s):
+            tick = _tick_from_pts(pts_tick, window, frozen, split)
+            if tick is None:
+                continue
+            found.setdefault(tick.source_frame_index, tick)
+    return _ordered_ticks(found)
+
+
+def _collect_decoded_ticks(
+    reader: FrameReader,
+    frozen: FrozenSplit,
+    split: SplitName,
+    windows: Sequence[_Window],
+) -> list[FrameTick]:
     found: dict[int, FrameTick] = {}
     for window in windows:
         for frame in reader.iterate(window.start_s, window.end_s):
@@ -626,6 +776,10 @@ def _collect_ticks(
             if tick is None:
                 continue
             found.setdefault(tick.source_frame_index, tick)
+    return _ordered_ticks(found)
+
+
+def _ordered_ticks(found: Mapping[int, FrameTick]) -> list[FrameTick]:
     return sorted(
         found.values(),
         key=lambda tick: (tick.source_time_s, tick.source_frame_index),
@@ -644,6 +798,47 @@ def _tick(
     time_s = frame.source_time_s
     if index is None or time_s is None:
         return None
+    return _tick_at(
+        video_id=frame.video_id,
+        index=index,
+        time_s=time_s,
+        source_pts=frame.source_pts,
+        span_end_s=frame.span_end_s,
+        window=window,
+        frozen=frozen,
+        split=split,
+    )
+
+
+def _tick_from_pts(
+    pts_tick: PtsTick,
+    window: _Window,
+    frozen: FrozenSplit,
+    split: SplitName,
+) -> FrameTick | None:
+    return _tick_at(
+        video_id=pts_tick.video_id,
+        index=pts_tick.source_frame_index,
+        time_s=pts_tick.source_time_s,
+        source_pts=pts_tick.source_pts,
+        span_end_s=pts_tick.span_end_s,
+        window=window,
+        frozen=frozen,
+        split=split,
+    )
+
+
+def _tick_at(
+    *,
+    video_id: str,
+    index: int,
+    time_s: float,
+    source_pts: int | None,
+    span_end_s: float | None,
+    window: _Window,
+    frozen: FrozenSplit,
+    split: SplitName,
+) -> FrameTick | None:
     if not math.isfinite(time_s) or time_s < 0:
         raise TimebaseError(
             "Некорректное время кадра. Отбор не подставляет другой кадр."
@@ -653,36 +848,25 @@ def _tick(
     if _assignment_at(frozen, time_s) != split.value or _in_guard(frozen, time_s):
         return None
     return FrameTick(
-        video_id=frame.video_id,
+        video_id=video_id,
         source_frame_index=index,
         source_time_s=time_s,
         episode_id=window.episode_id,
         split=split,
+        source_pts=source_pts,
+        span_end_s=span_end_s,
     )
 
 
 def _assignment_at(frozen: FrozenSplit, time_s: float) -> str | None:
-    """Split name, ``excluded_guard``, or ``None`` outside the frozen timeline."""
-    splits = {
-        episode.split.value
-        for episode in frozen.episodes
-        if episode.start_s <= time_s < episode.end_s
-    }
-    if len(splits) > 1:
-        raise LabError("episode_overlap", "В одной точке времени разные split.")
-    if len(splits) == 1:
-        return next(iter(splits))
-    for guard in frozen.guards:
-        if guard.start_s <= time_s < guard.end_s:
-            return guard.role
-    for block in frozen.blocks:
-        if block.start_s <= time_s < block.end_s:
-            return block.role
-    return None
+    """Role of the block that contains ``time_s``, or ``None``."""
+    return role_at(frozen.blocks, time_s)
 
 
 def _in_guard(frozen: FrozenSplit, time_s: float) -> bool:
-    return any(guard.start_s <= time_s < guard.end_s for guard in frozen.guards)
+    """Role blocks have no guard interval."""
+    del frozen, time_s
+    return False
 
 
 def _write_chosen(
@@ -690,7 +874,14 @@ def _write_chosen(
     windows_by_split: Mapping[SplitName, Sequence[_Window]],
     chosen: Sequence[SelectedTick],
     images_dir: Path,
-) -> list[_Encoded]:
+) -> _Written:
+    """Seek to each chosen tick and decode only that frame.
+
+    The seek lands on the previous keyframe and the reader drops the preroll;
+    the frame whose PTS equals the tick is written. A tick whose frame is
+    corrupt, absent, or without pixels goes to ``decode_failed``. It is not
+    replaced by a neighbour and it is not silently skipped.
+    """
     pending = {item.source_frame_index: item for item in chosen}
     if len(pending) != len(chosen):
         raise LabError(
@@ -698,38 +889,82 @@ def _write_chosen(
             "Один кадр попал в выборку дважды. Копия не записывается.",
         )
     encoded: list[_Encoded] = []
-    done: set[int] = set()
-    for split_name in (SplitName.train, SplitName.validation, SplitName.test):
-        for window in windows_by_split.get(split_name, []):
-            if not _window_needed(window, pending, done):
-                continue
-            for frame in reader.iterate(window.start_s, window.end_s):
-                index = frame.source_frame_index
-                if index is None or index not in pending or index in done:
-                    continue
-                encoded.append(_encode_frame(frame, pending[index], images_dir))
-                done.add(index)
-    missing = sorted(set(pending) - done)
-    if missing:
-        raise LabError(
-            "frame_missing",
-            f"Кадр {missing[0]} не прочитан повторно. Подставной кадр не записывается.",
-        )
+    failed: list[int] = []
+    ordered = sorted(chosen, key=lambda item: (item.source_time_s, item.source_frame_index))
+    for selected in ordered:
+        window = _containing_window(windows_by_split, selected)
+        frame = _decode_tick(reader, selected, window)
+        if frame is None or frame.image is None:
+            failed.append(selected.source_frame_index)
+            continue
+        encoded.append(_encode_frame(frame, selected, images_dir))
     encoded.sort(
         key=lambda item: (item.selected.source_time_s, item.selected.source_frame_index)
     )
-    return encoded
+    return _Written(encoded=encoded, decode_failed=failed)
 
 
-def _window_needed(
-    window: _Window,
-    pending: Mapping[int, SelectedTick],
-    done: set[int],
-) -> bool:
-    return any(
-        index not in done and window.start_s <= item.source_time_s < window.end_s
-        for index, item in pending.items()
+def _containing_window(
+    windows_by_split: Mapping[SplitName, Sequence[_Window]],
+    selected: SelectedTick,
+) -> _Window | None:
+    for window in windows_by_split.get(selected.split, []):
+        if window.start_s <= selected.source_time_s < window.end_s:
+            return window
+    return None
+
+
+def _decode_tick(
+    reader: FrameReader,
+    selected: SelectedTick,
+    window: _Window | None,
+) -> ReadFrame | None:
+    return decode_frame_at(
+        reader,
+        source_frame_index=selected.source_frame_index,
+        source_time_s=selected.source_time_s,
+        source_pts=selected.source_pts,
+        span_end_s=selected.span_end_s,
+        limit_s=None if window is None else window.end_s,
     )
+
+
+def decode_frame_at(
+    reader: FrameReader,
+    *,
+    source_frame_index: int,
+    source_time_s: float,
+    source_pts: int | None = None,
+    span_end_s: float | None = None,
+    limit_s: float | None = None,
+) -> ReadFrame | None:
+    """Seek to one frame and decode it, or ``None`` when it is not readable.
+
+    The reader lands on the previous keyframe and drops the preroll. The read
+    interval is the frame's own display span clamped to ``limit_s`` (its block
+    end), so a frame of the next block is never decoded. Without a known span
+    the read stops at the first frame on or after the time. The frame matches
+    by PTS when one is known, otherwise by source index. A different first
+    frame means the wanted one is absent; no neighbour is returned instead.
+    """
+    end_s = span_end_s
+    if limit_s is not None:
+        end_s = limit_s if end_s is None else min(end_s, limit_s)
+    if end_s is not None and end_s <= source_time_s:
+        end_s = None
+    frames = reader.iterate(source_time_s, end_s)
+    try:
+        for frame in frames:
+            if frame.decode_status is not DecodeStatus.ok:
+                continue
+            if source_pts is not None:
+                matched = frame.source_pts == source_pts
+            else:
+                matched = frame.source_frame_index == source_frame_index
+            return frame if matched else None
+    finally:
+        frames.close()
+    return None
 
 
 def _encode_frame(frame: ReadFrame, selected: SelectedTick, images_dir: Path) -> _Encoded:
@@ -740,6 +975,11 @@ def _encode_frame(frame: ReadFrame, selected: SelectedTick, images_dir: Path) ->
             f"Кадр {selected.source_frame_index} не декодирован. "
             "Подставной кадр не записывается.",
         )
+    if frame.source_pts is None:
+        raise TimebaseError(
+            f"У кадра {selected.source_frame_index} нет PTS. "
+            "Подставное время не записывается."
+        )
     name = f"{selected.video_id}_{selected.source_frame_index}.jpg"
     destination = images_dir / name
     phash = _average_hash(image)
@@ -749,6 +989,8 @@ def _encode_frame(frame: ReadFrame, selected: SelectedTick, images_dir: Path) ->
         image_sha256=hashlib.sha256(payload).hexdigest(),
         image_file=name,
         phash=phash,
+        source_pts=frame.source_pts,
+        time_base=frame.time_base,
     )
 
 
@@ -780,6 +1022,8 @@ def _rows_with_warnings(encoded: Sequence[_Encoded]) -> list[SampleRow]:
                 model_version=selected.model_version,
                 near_duplicate_warning=warning,
                 near_duplicate_of=matched,
+                source_pts=item.source_pts,
+                time_base=item.time_base,
             )
         )
     if len(rows) != len(encoded):
@@ -862,6 +1106,8 @@ def _selected(tick: FrameTick, reason: str, strategy: StrategyName) -> SelectedT
         split=tick.split,
         selection_reason=reason,
         strategy=strategy,
+        source_pts=tick.source_pts,
+        span_end_s=tick.span_end_s,
     )
 
 

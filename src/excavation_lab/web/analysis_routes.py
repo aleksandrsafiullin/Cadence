@@ -15,7 +15,7 @@ from starlette.responses import FileResponse, RedirectResponse, Response
 from starlette.routing import Route
 
 from excavation_lab import storage
-from excavation_lab.errors import JobAlreadyRunningError, LabError
+from excavation_lab.errors import LabError
 from excavation_lab.hardware import official_nano_weights_path, weights_cache_dir
 from excavation_lab.jobs import reopen
 from excavation_lab.schemas import ZONE_NAMES, JobRecord, load_pilot
@@ -101,6 +101,9 @@ def encode_rgb_jpeg(image: np.ndarray) -> bytes:
 
 
 async def post_analysis_start(request: Request) -> RedirectResponse:
+    from excavation_lab.web.label_routes import release_suggestion_adapter
+
+    release_suggestion_adapter(request.app)
     workspace = _workspace(request)
     book = _book(workspace)
     project_id = _project_id(workspace)
@@ -132,6 +135,9 @@ async def post_analysis_start(request: Request) -> RedirectResponse:
 
 async def post_analysis_export(request: Request) -> RedirectResponse:
     """Toggles and zone rows. They are not sent to ``request_analysis``."""
+    from excavation_lab.web.label_routes import release_suggestion_adapter
+
+    release_suggestion_adapter(request.app)
     workspace = _workspace(request)
     book = _book(workspace)
     project_id = _project_id(workspace)
@@ -277,9 +283,14 @@ def _filled(
 ) -> dict[str, object]:
     video_id = str(video["video_id"])
     mode = _selected_mode(request)
-    bundles = analysis_page.list_bundles(workspace, project_id)
+    options = analysis_page.list_bundle_options(workspace, project_id)
+    bundle_ids = [item.model_id for item in options]
     posted_bundle = _text(request.query_params.get("bundle"))
-    bundle = posted_bundle if posted_bundle in bundles else (bundles[0] if bundles else "")
+    bundle = posted_bundle if posted_bundle in bundle_ids else (bundle_ids[0] if bundle_ids else "")
+    bundles = [
+        {"id": item.model_id, "label": analysis_page.bundle_option_label(item, book)}
+        for item in options
+    ]
     start, end = analysis_page.interval_defaults(video)
     draft = analysis_page.threshold_draft_from_pilot()
     jobs, list_error = _jobs(workspace)
@@ -337,7 +348,7 @@ def _filled(
             ],
             "start_enabled": enabled,
             "export_enabled": enabled and run is not None,
-            "blocked_message": None if enabled else JobAlreadyRunningError().message,
+            "blocked_message": None if enabled else book.job_already_running,
             "run_options": [
                 {"id": item.run_id, "selected": run is not None and item.run_id == run.run_id}
                 for item in runs

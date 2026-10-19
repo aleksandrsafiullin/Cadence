@@ -22,6 +22,11 @@ from typer.testing import CliRunner
 
 from excavation_lab import jobs
 from excavation_lab.cli import app
+from excavation_lab.datasets.catalog import (
+    add_class,
+    list_catalogs,
+    require_project_catalog,
+)
 from excavation_lab.errors import LabError
 from excavation_lab.jobs import (
     get_job,
@@ -69,6 +74,7 @@ from excavation_lab.visualization.annotate import (
 )
 from excavation_lab.visualization.export_video import (
     DEFAULT_EXPORT_FPS,
+    _titles,
     encode_annotated_video,
     enqueue_video_export,
     run_export_job,
@@ -179,7 +185,8 @@ def _prepare(
 ) -> tuple[Path, Path]:
     """Register one completed analysis. The export parent does not run it."""
     workspace = tmp_path / "workspace"
-    create_project(_PROJECT, workspace)
+    list_catalogs(workspace)
+    create_project(_PROJECT, workspace, catalog_id="excavation")
     source = workspace / "clip.mp4"
     write_synthetic_mp4(source, 1.0, 30)
     add_video(workspace, _PROJECT, source, video_id=_VIDEO)
@@ -757,7 +764,8 @@ def test_old_lab_jobs_accepts_export_kind(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workspace = tmp_path / "workspace"
-    create_project(_PROJECT, workspace)
+    list_catalogs(workspace)
+    create_project(_PROJECT, workspace, catalog_id="excavation")
     path = lab_database(workspace)
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path)
@@ -797,3 +805,19 @@ def test_drawer_does_not_call_bytetrack_or_write_tables() -> None:
     assert "to_parquet" not in export_src
     assert "add_detection" not in export_src
     assert "sv.ByteTrack" not in export_src
+
+
+def test_custom_titles_come_from_the_project_catalog(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    list_catalogs(workspace)
+    create_project(_PROJECT, workspace, catalog_id="excavation")
+    add_class(workspace, "excavation", "shovel", "Лопата", "Видимая лопата.")
+    catalog = require_project_catalog(workspace, _PROJECT)
+    titles = _titles(False, catalog)
+    assert titles["shovel"] == "Лопата"
+    assert titles["bucket"] == "Ковш"
+    assert titles["excavator_body"] == "Экскаватор: корпус"
+    seed = _titles(True, catalog)
+    assert "shovel" not in seed
+    assert seed["bucket"] == "Ковш"
+    assert _titles(False) == {}

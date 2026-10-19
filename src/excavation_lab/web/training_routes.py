@@ -11,7 +11,7 @@ from starlette.responses import RedirectResponse
 from starlette.routing import Route
 
 from excavation_lab import storage
-from excavation_lab.errors import JobAlreadyRunningError, LabError
+from excavation_lab.errors import LabError
 from excavation_lab.jobs import worker_job
 from excavation_lab.schemas import (
     PROFILE_PILOT_SMALL,
@@ -83,6 +83,9 @@ def training_context(
 
 
 async def post_training_start(request: Request) -> RedirectResponse:
+    from excavation_lab.web.label_routes import release_suggestion_adapter
+
+    release_suggestion_adapter(request.app)
     workspace = _workspace(request)
     book = _book(workspace)
     project_id = _project_id(workspace)
@@ -196,7 +199,10 @@ def _form_context(
         "not_ready": (
             None
             if versions
-            else training_page.format_error("dataset_not_ready", book.dataset_not_ready)
+            else training_page.format_error(
+                "dataset_not_ready",
+                training_page.missing_snapshot_message(workspace, project_id, book),
+            )
         ),
         "profile": profile_name,
         "profile_options": [
@@ -215,7 +221,7 @@ def _form_context(
         "seed_value": _shown_number(fields["seed"]),
         "profiles": _browser_profiles(),
         "start_enabled": enabled,
-        "blocked_message": None if enabled else JobAlreadyRunningError().message,
+        "blocked_message": None if enabled else book.job_already_running,
         "cancel_job_id": cancel_id,
         "status_line": (
             job_status_line(shown, book)

@@ -2,7 +2,10 @@
 
 The directory for validation is ``valid``, matching ``build_roboflow_from_coco``.
 A CVAT subset name is not a split. Train COCO contains only reviewed frames
-that are not excluded. This module does not propose a split and does not train.
+that are not excluded. ``class_supervision.json`` in each split is the
+authority for a negative. A missing COCO box is not one by itself.
+This module does not propose a split, does not open ``weights.pth``, and
+does not train.
 """
 
 from __future__ import annotations
@@ -19,6 +22,13 @@ from typing import Any
 
 from pydantic import Field
 
+from excavation_lab.datasets.blocks import assignment_at as role_at
+from excavation_lab.datasets.catalog import (
+    StoredCatalog,
+    require_catalog_file,
+    require_project_catalog,
+)
+from excavation_lab.datasets.class_supervision import class_supervision
 from excavation_lab.datasets.coco_import import (
     ImportedFrame,
     build_class_mapping,
@@ -35,6 +45,13 @@ from excavation_lab.datasets.splits import (
 from excavation_lab.errors import LabError, SplitNotFrozenError
 from excavation_lab.schemas import SCHEMA_VERSION, ReviewStatus, SplitName, StrictModel
 from excavation_lab.storage import connect, project_directory, project_sqlite
+
+# The sidecar, not a missing COCO box, decides a negative.
+_NEGATIVE_AUTHORITY = (
+    "class_supervision.json is the authority for negative. "
+    "A missing COCO box is not, by itself, a negative."
+)
+_SUPERVISION_FILE = "class_supervision.json"
 
 # RF-DETR reads ``valid``. The internal split name stays ``validation``.
 RFDETR_SPLIT_DIRECTORIES: dict[SplitName, str] = {
@@ -75,7 +92,12 @@ def snapshot_dataset(workspace: Path, project_id: str) -> SnapshotResult:
     _reject_group_crossover(frames)
     for frame in frames:
         _assert_frozen_split(frozen, frame)
-    mapping = build_class_mapping()
+    catalog = require_project_catalog(workspace, project_id)
+    catalog_id = _project_catalog_id(workspace, project_id)
+    catalog_file = require_catalog_file(workspace, catalog_id)
+    catalog_hash = hashlib.sha256(catalog_file.read_bytes()).hexdigest()
+    mapping = build_class_mapping(catalog)
+    weights_id = _selected_weights_id(workspace, project_id)
     grouped: dict[SplitName, list[ImportedFrame]] = {split: [] for split in SplitName}
     for frame in frames:
         if _in_training_coco(frame.record):
@@ -86,15 +108,23 @@ def snapshot_dataset(workspace: Path, project_id: str) -> SnapshotResult:
         RFDETR_SPLIT_DIRECTORIES[split]: _coco_document(items, mapping)
         for split, items in grouped.items()
     }
+    supervision = {
+        RFDETR_SPLIT_DIRECTORIES[split]: _supervision_document(items, catalog)
+        for split, items in grouped.items()
+    }
     split_hashes = {video_id: item.content_hash for video_id, item in frozen.items()}
     split_content_hash = _combined_split_hash(split_hashes)
     dataset_hash = hashlib.sha256(
         canonical_json_bytes(
             {
                 "schema_version": SCHEMA_VERSION,
+                "catalog_hash": catalog_hash,
+                "catalog_id": catalog_id,
                 "class_mapping": mapping,
+                "class_supervision": supervision,
                 "split_content_hashes": split_hashes,
                 "splits": coco,
+                "weights_id": weights_id,
             }
         )
     ).hexdigest()
@@ -108,6 +138,10 @@ def snapshot_dataset(workspace: Path, project_id: str) -> SnapshotResult:
         grouped=grouped,
         coco=coco,
         mapping=mapping,
+        supervision=supervision,
+        catalog_id=catalog_id,
+        catalog_hash=catalog_hash,
+        weights_id=weights_id,
         dataset_hash=dataset_hash,
         split_content_hash=split_content_hash,
         split_hashes=split_hashes,
@@ -191,40 +225,19 @@ def _assert_frozen_split(
     frozen = frozen_by_video.get(frame.video_id)
     if frozen is None:
         raise SplitNotFrozenError(frame.video_id)
-    if frame.episode_id:
-        matches = [
-            episode for episode in frozen.episodes if episode.episode_id == frame.episode_id
-        ]
-        if len(matches) != 1:
-            raise LabError(
-                "episode_not_found",
-                f"Кадр {frame.video_id}:{frame.source_frame_index}: эпизод "
-                f"«{frame.episode_id}» не найден в зафиксированном разбиении. "
-                "Split не пересчитывается.",
-            )
-        episode = matches[0]
-        expected_split, expected_group = episode.split, episode.split_group_id
-    else:
-        expected_split, expected_group = _block_assignment(frozen, frame)
-    if frame.split is not expected_split or frame.split_group_id != expected_group:
+    expected = role_at(frozen.blocks, frame.source_time_s)
+    if expected is None:
+        raise LabError(
+            "frame_unassigned",
+            f"Кадр {frame.video_id}:{frame.source_frame_index} не попадает "
+            "в зафиксированное разбиение. Split не пересчитывается.",
+        )
+    if frame.split.value != expected:
         raise LabError(
             "split_mismatch",
             f"Кадр {frame.video_id}:{frame.source_frame_index} не совпадает "
             "с зафиксированным разбиением. Split не пересчитывается.",
         )
-
-
-def _block_assignment(frozen: FrozenSplit, frame: ImportedFrame) -> tuple[SplitName, str]:
-    for block in frozen.blocks:
-        if block.role not in {"train", "validation", "test"}:
-            continue
-        if block.start_s <= frame.source_time_s < block.end_s:
-            return SplitName(block.role), ""
-    raise LabError(
-        "frame_unassigned",
-        f"Кадр {frame.video_id}:{frame.source_frame_index} не попадает "
-        "в зафиксированное разбиение. Split не пересчитывается.",
-    )
 
 
 def _combined_split_hash(split_hashes: dict[str, str]) -> str:
@@ -256,7 +269,7 @@ def _coco_document(frames: list[ImportedFrame], mapping: dict[str, Any]) -> dict
             }
         )
         for box in frame.record.boxes:
-            spec = by_name.get(box.class_name.value)
+            spec = by_name.get(box.class_name)
             if (
                 spec is None
                 or spec["internal_id"] != box.class_id
@@ -265,7 +278,7 @@ def _coco_document(frames: list[ImportedFrame], mapping: dict[str, Any]) -> dict
                 raise LabError(
                     "class_map",
                     f"Кадр {frame.video_id}:{frame.source_frame_index}: класс "
-                    f"«{box.class_name.value}» не совпадает с class_mapping.json.",
+                    f"«{box.class_name}» не совпадает с class_mapping.json.",
                 )
             try:
                 x, y, width, height = xyxy_to_xywh(
@@ -307,6 +320,29 @@ def _coco_document(frames: list[ImportedFrame], mapping: dict[str, Any]) -> dict
     }
 
 
+def _supervision_document(
+    frames: list[ImportedFrame],
+    catalog: StoredCatalog,
+) -> dict[str, Any]:
+    """One record per trainable image, keyed by image id and by file name.
+
+    Both keys are the same record. Image ids match ``_coco_document``.
+    """
+    images: dict[str, dict[str, Any]] = {}
+    for index, frame in enumerate(frames, start=1):
+        supervision = class_supervision(frame.record, catalog)
+        record = {
+            "file_name": frame.image_file,
+            "image_id": index,
+            "negatives": sorted(supervision.negatives),
+            "positives": sorted(supervision.positives),
+            "unsupervised": sorted(supervision.unsupervised),
+        }
+        images[str(index)] = record
+        images[frame.image_file] = record
+    return {"images": images, "schema_version": SCHEMA_VERSION}
+
+
 def _write_tree(
     project_dir: Path,
     *,
@@ -317,6 +353,10 @@ def _write_tree(
     grouped: dict[SplitName, list[ImportedFrame]],
     coco: dict[str, dict[str, Any]],
     mapping: dict[str, Any],
+    supervision: dict[str, dict[str, Any]],
+    catalog_id: str,
+    catalog_hash: str,
+    weights_id: str | None,
     dataset_hash: str,
     split_content_hash: str,
     split_hashes: dict[str, str],
@@ -341,6 +381,7 @@ def _write_tree(
                 target = split_dir / frame.image_file
                 shutil.copyfile(frame.jpeg_path, target)
             _write_json(split_dir / "_annotations.coco.json", coco[directory_name])
+            _write_json(split_dir / _SUPERVISION_FILE, supervision[directory_name])
         _write_json(partial / "class_mapping.json", mapping)
         _write_split_manifest(partial / "split_manifest.json", workspace, project_id, video_ids)
         _write_json(
@@ -352,6 +393,11 @@ def _write_tree(
                 "dataset_hash": dataset_hash,
                 "split_content_hash": split_content_hash,
                 "split_content_hashes": split_hashes,
+                "catalog_id": catalog_id,
+                "catalog_hash": catalog_hash,
+                "weights_id": weights_id,
+                "class_supervision_file": _SUPERVISION_FILE,
+                "negative_authority": _NEGATIVE_AUTHORITY,
             },
         )
         os.replace(partial, final)
@@ -385,6 +431,43 @@ def _write_split_manifest(
 def _write_json(path: Path, document: dict[str, Any]) -> None:
     text = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True)
     path.write_text(text + "\n", encoding="utf-8")
+
+
+def _project_catalog_id(workspace: Path, project_id: str) -> str:
+    db_path = project_sqlite(workspace, project_id)
+    with connect(db_path) as connection:
+        row = connection.execute("SELECT catalog_id FROM projects LIMIT 1").fetchone()
+    catalog_id = None if row is None else row["catalog_id"]
+    if not isinstance(catalog_id, str) or not catalog_id.strip():
+        raise LabError(
+            "catalog_missing",
+            f"У проекта «{project_id}» нет каталога.",
+        )
+    return catalog_id
+
+
+def _selected_weights_id(workspace: Path, project_id: str) -> str | None:
+    """The one published bundle id in ``model_versions``, or null.
+
+    Zero rows and more than one row are not a selection. The path is not
+    opened and ``weights.pth`` is not read.
+    """
+    db_path = project_sqlite(workspace, project_id)
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT model_id FROM model_versions
+            WHERE project_id = ?
+            ORDER BY created_at, model_id
+            """,
+            (project_id,),
+        ).fetchall()
+    if len(rows) != 1:
+        return None
+    model_id = rows[0]["model_id"]
+    if not isinstance(model_id, str) or not model_id.strip():
+        return None
+    return model_id
 
 
 def _record_dataset(

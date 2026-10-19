@@ -22,6 +22,7 @@ from typer.testing import CliRunner
 
 from excavation_lab import cli as cli_module
 from excavation_lab.cli import app
+from excavation_lab.datasets.catalog import list_catalogs
 from excavation_lab.errors import (
     CorruptMediaError,
     DiskFullError,
@@ -361,7 +362,8 @@ def test_cli_json_media_failures_have_no_traceback(
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "workspace"
-    create_project("pilot", workspace)
+    list_catalogs(workspace)
+    create_project("pilot", workspace, catalog_id="excavation")
 
     outside = tmp_path / "outside.mp4"
     outside.write_bytes(b"nope")

@@ -29,100 +29,97 @@
     <button type="submit" class="lab-button">{{ book.video_choice }}</button>
   </form>
   {% endif %}
-  <section>
-    <h2 class="lab-section">{{ book.episodes_heading }}</h2>
-    <form class="lab-form" method="post" action="/data/episode">
-      <input type="hidden" name="video_id" value="{{ selected_video_id }}">
-      <label class="lab-label" for="episode-id">{{ book.episode_id }}</label>
-      <input class="lab-input" id="episode-id" name="episode_id" type="text">
-      <label class="lab-label" for="episode-group">{{ book.episode_group }}</label>
-      <input class="lab-input" id="episode-group" name="split_group_id" type="text">
-      <label class="lab-label" for="episode-start">{{ book.interval_start }}</label>
-      <input class="lab-input" id="episode-start" name="start_s" type="number" min="0" step="any" value="0">
-      <label class="lab-label" for="episode-end">{{ book.interval_end }}</label>
-      <input class="lab-input" id="episode-end" name="end_s" type="number" min="0" step="any" value="1">
-      <p class="lab-caption">{{ book.interval_help }}</p>
-      <label class="lab-label" for="episode-label">{{ book.episode_label }}</label>
-      <input class="lab-input" id="episode-label" name="label" type="text">
-      <label class="lab-label" for="episode-concurrent">{{ book.episode_concurrent }}</label>
-      <input id="episode-concurrent" name="concurrent" type="checkbox" value="1">
-      <button type="submit" class="lab-button">{{ book.add_episode }}</button>
-    </form>
-    {% if episode_error %}
-    <p class="lab-alert" role="alert">{{ episode_error }}</p>
-    {% endif %}
-    {% if episode_rows %}
-    <div class="lab-table-wrap">
-      <table class="lab-table">
-        <thead>
-          <tr>
-            <th>{{ book.column_episode }}</th>
-            <th>{{ book.column_start_s }}</th>
-            <th>{{ book.column_end_s }}</th>
-            <th>{{ book.column_split_group }}</th>
-            <th>{{ book.column_label }}</th>
-            <th>{{ book.column_split }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in episode_rows %}
-          <tr>
-            <td>{{ row.episode_id }}</td>
-            <td>{{ row.start_s }}</td>
-            <td>{{ row.end_s }}</td>
-            <td>{{ row.split_group_id }}</td>
-            <td>{{ row.label }}</td>
-            <td>{{ row.split }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    {% for line in episode_lines %}
-    <p class="lab-caption">{{ line }}</p>
+  <ol class="lab-steps">
+    {% for step in steps %}
+    <li{% if step.state == "current" %} aria-current="step"{% endif %}>
+      <a href="#{{ step.anchor }}">{{ step.title }}</a>
+      <span class="lab-step-status">{{ step.status }}</span>
+    </li>
     {% endfor %}
-    {% else %}
-    <p class="lab-caption">{{ book.episodes_empty }}</p>
-    {% endif %}
-  </section>
-  <section>
-    <h2 class="lab-section">{{ book.split_heading }}</h2>
-    <form class="lab-form" method="post" action="/data/propose">
-      <input type="hidden" name="video_id" value="{{ selected_video_id }}">
-      <button type="submit" class="lab-button">{{ book.propose_split }}</button>
-    </form>
+  </ol>
+  <details id="step-split" class="lab-step" data-state="{{ steps[0].state }}"{% if steps[0].state == "current" %} open{% endif %}>
+    <summary>
+      <span class="lab-section">{{ steps[0].title }}</span>
+      <span class="lab-step-status">{{ steps[0].status }}</span>
+      {% if steps[0].waiting_reason %}<span class="lab-caption">{{ steps[0].waiting_reason }}</span>{% endif %}
+    </summary>
+    <p class="lab-step-text">{{ steps[0].instruction }}</p>
+    <p class="lab-caption" id="equipment-block-help">{{ book.equipment_block_help }}</p>
+    <div class="lab-episode-cutter" id="block-editor">
+      <div class="lab-stage" id="block-stage">
+        <p class="lab-alert" id="playback-failed" role="alert" hidden>{{ book.playback_failed }}</p>
+        <video controls preload="metadata" src="{{ media_url }}"></video>
+      </div>
+      {% if block_duration_s is none %}
+      <p class="lab-caption" id="block-duration-note">{{ book.meta_duration }}: {{ book.not_calculated }}.</p>
+      {% endif %}
+      {% if block_offset_s is none %}
+      <p class="lab-caption" id="block-offset-note">{{ book.offset_label }}: {{ book.not_calculated }}.</p>
+      {% endif %}
+      <div class="lab-timeline{% if blocks_frozen %} is-readonly{% endif %}" id="block-timeline"{% if block_duration_attr %} data-duration="{{ block_duration_attr }}"{% endif %}{% if block_offset_attr %} data-offset="{{ block_offset_attr }}"{% endif %}>
+        <div class="lab-timeline-track" id="block-track">
+          {% for piece in timeline_pieces %}
+          <span class="lab-timeline-block{% if piece.unassigned %} is-unassigned{% endif %}" style="left: {{ piece.left }}%; width: {{ piece.width }}%">{{ piece.label }}</span>
+          {% endfor %}
+        </div>
+      </div>
+      <p class="lab-caption" id="block-guard-help">{{ book.block_guard_help }}</p>
+      <p class="lab-caption" id="block-frame-step">{{ book.frame_step_label }}: {% if block_frame_step %}{{ block_frame_step }}{% else %}{{ book.not_calculated }}{% endif %}.</p>
+      {% if blocks_frozen %}
+      <p class="lab-caption" id="block-frozen-reason">{{ book.episodes_frozen_note }}</p>
+      {% endif %}
+      <div class="lab-episode-tools">
+        <label class="lab-label" for="block-role">{{ book.block_role }}</label>
+        <select class="lab-select" id="block-role"{% if blocks_frozen or not block_clock %} disabled title="{{ book.episodes_frozen_note if blocks_frozen else book.frame_step_label ~ ': ' ~ book.not_calculated ~ '.' }}"{% endif %}>
+          <option value="train">{{ book.split_name_train }}</option>
+          <option value="validation">{{ book.split_name_validation }}</option>
+          <option value="test">{{ book.split_name_test }}</option>
+        </select>
+        <label class="lab-label" for="block-start">{{ book.block_start }}</label>
+        <input class="lab-input" id="block-start" type="number" step="any"{% if blocks_frozen or not block_clock %} disabled title="{{ book.episodes_frozen_note if blocks_frozen else book.frame_step_label ~ ': ' ~ book.not_calculated ~ '.' }}"{% endif %}>
+        <label class="lab-label" for="block-end">{{ book.block_end }}</label>
+        <input class="lab-input" id="block-end" type="number" step="any"{% if blocks_frozen or not block_clock %} disabled title="{{ book.episodes_frozen_note if blocks_frozen else book.frame_step_label ~ ': ' ~ book.not_calculated ~ '.' }}"{% endif %}>
+        <button type="button" class="lab-button" id="block-add"{% if blocks_frozen or not block_clock %} disabled title="{{ book.episodes_frozen_note if blocks_frozen else book.frame_step_label ~ ': ' ~ book.not_calculated ~ '.' }}"{% endif %}>{{ book.add_block }}</button>
+        <button type="button" class="lab-button" id="block-save"{% if blocks_frozen or not block_clock %} disabled title="{{ book.episodes_frozen_note if blocks_frozen else book.frame_step_label ~ ': ' ~ book.not_calculated ~ '.' }}"{% endif %}>{{ book.save_blocks }}</button>
+      </div>
+      <p class="lab-alert" id="block-editor-error" role="alert" hidden></p>
+    </div>
+    <script type="application/json" id="block-editor-state">{{ block_editor | tojson }}</script>
+    <script src="/static/episode_cutter.js"></script>
     <form class="lab-form" method="post" action="/data/freeze">
       <input type="hidden" name="video_id" value="{{ selected_video_id }}">
+      <p class="lab-caption">{{ book.freeze_once }}</p>
       <button type="submit" class="lab-button">{{ book.freeze_split }}</button>
       <p class="lab-caption">{{ book.freeze_note }}</p>
     </form>
     {% if split_load_error %}
     <p class="lab-alert" role="alert">{{ split_load_error }}</p>
     {% endif %}
-    {% if split_state == "missing" %}
+    {% for line in episode_label_lines %}
+    <p class="lab-caption">{{ line }}</p>
+    {% endfor %}
+    {% if split_state == "missing" and not split_load_error %}
     <p class="lab-caption">{{ book.proposal_missing }}</p>
-    {% else %}
+    {% elif split_state != "missing" %}
     <p class="lab-caption">{{ split_state_heading }}</p>
     {% if split_hash_line %}
     <p class="lab-caption">{{ split_hash_line }}</p>
     {% endif %}
-    {% if independence_line %}
-    <p class="lab-caption">{{ independence_line }}</p>
-    {% endif %}
     {% if limitation %}
     <p class="lab-caption">{{ limitation }}</p>
     {% endif %}
-    <h2 class="lab-section">{{ book.guards_heading }}</h2>
-    {% for line in guard_lines %}
-    <p class="lab-caption">{{ line }}</p>
-    {% endfor %}
     {% for line in block_lines %}
     <p class="lab-caption">{{ line }}</p>
     {% endfor %}
     {% endif %}
-  </section>
-  <section>
-    <h2 class="lab-section">{{ book.sample_heading }}</h2>
+  </details>
+  <details id="step-sample" class="lab-step" data-state="{{ steps[1].state }}"{% if steps[1].state == "current" %} open{% endif %}>
+    <summary>
+      <span class="lab-section">{{ steps[1].title }}</span>
+      <span class="lab-step-status">{{ steps[1].status }}</span>
+      {% if steps[1].waiting_reason %}<span class="lab-caption">{{ steps[1].waiting_reason }}</span>{% endif %}
+    </summary>
+    <p class="lab-step-text">{{ steps[1].instruction }}</p>
     <p class="lab-caption">{{ book.sample_rule }}</p>
     <form class="lab-form" method="post" action="/data/sample">
       <input type="hidden" name="video_id" value="{{ selected_video_id }}">
@@ -132,18 +129,19 @@
         <option value="{{ item.id }}">{{ item.label }}</option>
         {% endfor %}
       </select>
+      <p class="lab-caption">{{ book.sample_plan_help }}</p>
       <button type="submit" class="lab-button" name="sample_mode" value="plan">{{ book.sample_plan_button }}</button>
-      <label class="lab-label" for="sample-split">{{ book.sample_split }}</label>
-      <select class="lab-select" id="sample-split" name="split">
-        {% for name in splits %}
-        <option value="{{ name }}">{{ name }}</option>
-        {% endfor %}
-      </select>
-      <label class="lab-label" for="sample-count">{{ book.sample_count }}</label>
-      <input class="lab-input" id="sample-count" name="count" type="number" min="1" step="1" value="4">
-      <button type="submit" class="lab-button" name="sample_mode" value="count">{{ book.sample_count_button }}</button>
       <details class="lab-details">
         <summary>{{ book.advanced }}</summary>
+        <label class="lab-label" for="sample-split">{{ book.sample_split }}</label>
+        <select class="lab-select" id="sample-split" name="split">
+          {% for item in split_choices %}
+          <option value="{{ item.value }}">{{ item.label }}</option>
+          {% endfor %}
+        </select>
+        <label class="lab-label" for="sample-count">{{ book.sample_count }}</label>
+        <input class="lab-input" id="sample-count" name="count" type="number" min="1" step="1" value="4">
+        <button type="submit" class="lab-button" name="sample_mode" value="count">{{ book.sample_count_button }}</button>
         <label class="lab-label" for="sample-spacing">{{ book.sample_spacing }}</label>
         <input class="lab-input" id="sample-spacing" name="spacing_s" type="number" min="0.1" step="0.1" value="{{ spacing_value }}">
         <p class="lab-caption">{{ book.plan_counts_caption }}</p>
@@ -154,46 +152,131 @@
     {% if contact_error %}
     <p class="lab-alert" role="alert">{{ contact_error }}</p>
     {% endif %}
-    {% if contact_names %}
-    <ul class="lab-meta" id="contact-sheet">
-      {% for name in contact_names %}
-      <li>{{ name }}</li>
+    {% if contact_frames %}
+    <p class="lab-caption">{{ book.contact_no_boxes }}</p>
+    <ul class="lab-thumbs" id="contact-sheet">
+      {% for frame in contact_frames %}
+      <li>
+        <a href="{{ label_links[loop.index0].href }}">
+          <img src="{{ frame.src }}" alt="{{ frame.name }}">
+        </a>
+        {{ frame.name }}
+      </li>
       {% endfor %}
     </ul>
     {% else %}
     <p class="lab-caption">{{ book.contact_empty }}</p>
     {% endif %}
-  </section>
-  <section>
-    <h2 class="lab-section">{{ book.cvat_heading }}</h2>
+  </details>
+  <details id="step-label" class="lab-step" data-state="{{ steps[2].state }}"{% if steps[2].state == "current" %} open{% endif %}>
+    <summary>
+      <span class="lab-section">{{ book.cvat_heading }}</span>
+      <span class="lab-step-status">{{ steps[2].status }}</span>
+      {% if steps[2].waiting_reason %}<span class="lab-caption">{{ steps[2].waiting_reason }}</span>{% endif %}
+    </summary>
+    <p class="lab-step-text">{{ steps[2].instruction }}</p>
+    <a class="lab-button" id="open-labeler" href="{{ label_open_href }}">{{ book.label_open_app }}</a>
+    <p class="lab-caption">{{ book.label_class_names }}</p>
+    <ul class="lab-meta" id="label-classes">
+      {% for item in label_classes %}
+      <li><code>{{ item.name }}</code> — {{ item.title }}. {{ item.box }}</li>
+      {% endfor %}
+    </ul>
+    {% if label_catalog_id %}
+    <form class="lab-form" method="post" action="/data/class">
+      <input type="hidden" name="video_id" value="{{ selected_video_id }}">
+      <label class="lab-label" for="add-class-name">{{ book.add_class_name }}</label>
+      <input class="lab-input" id="add-class-name" name="class_name" autocomplete="off" required>
+      <label class="lab-label" for="add-class-title">{{ book.add_class_title }}</label>
+      <input class="lab-input" id="add-class-title" name="title" autocomplete="off" required>
+      <label class="lab-label" for="add-class-box">{{ book.add_class_box }}</label>
+      <input class="lab-input" id="add-class-box" name="box" autocomplete="off" required>
+      <button type="submit" class="lab-button" id="add-class">{{ book.add_class }}</button>
+    </form>
+    {% endif %}
+    <p class="lab-caption">{{ book.label_review_rule }}</p>
+    <p class="lab-caption">{{ book.label_zip_back }}</p>
     <form class="lab-form" method="post" action="/data/export">
       <input type="hidden" name="video_id" value="{{ selected_video_id }}">
       <label class="lab-label" for="export-split">{{ book.batch_split }}</label>
       <select class="lab-select" id="export-split" name="split">
-        {% for name in splits %}
-        <option value="{{ name }}">{{ name }}</option>
+        {% for item in split_choices %}
+        <option value="{{ item.value }}">{{ item.label }}</option>
         {% endfor %}
       </select>
       <label class="lab-label" for="include-predictions">{{ book.include_predictions }}</label>
       <input id="include-predictions" name="include_predictions" type="checkbox" value="1">
       <p class="lab-caption">{{ book.predictions_help }}</p>
       <button type="submit" class="lab-button">{{ book.export_cvat }}</button>
+      <p class="lab-caption">{{ book.export_path_note }}</p>
     </form>
+    {% if batch_links %}
+    <ul class="lab-meta">
+      {% for item in batch_links %}
+      <li><a class="lab-link" href="{{ item.href }}">{{ book.download_batch }}</a> ({{ item.label }})</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
     <form class="lab-form" method="post" action="/data/import" enctype="multipart/form-data">
       <input type="hidden" name="video_id" value="{{ selected_video_id }}">
       <label class="lab-label" for="import-split">{{ book.batch_split }}</label>
       <select class="lab-select" id="import-split" name="split">
-        {% for name in splits %}
-        <option value="{{ name }}">{{ name }}</option>
+        {% for item in split_choices %}
+        <option value="{{ item.value }}">{{ item.label }}</option>
         {% endfor %}
       </select>
       <label class="lab-label" for="import-file">{{ book.import_file }}</label>
       <input class="lab-input" id="import-file" name="file" type="file" accept=".zip,application/zip">
       <button type="submit" class="lab-button">{{ book.import_coco }}</button>
     </form>
-  </section>
-  {% endif %}
+    <h2 class="lab-section">{{ book.review_heading }}</h2>
+    <p class="lab-caption">{{ book.label_counts_this_video }}</p>
+    <p class="lab-caption" id="label-counts-video">{{ label_counts_video }}</p>
+    <p class="lab-caption">{{ book.label_counts_project }}</p>
+    <p class="lab-caption" id="label-counts-project">{{ label_counts_project }}</p>
+    <p class="lab-caption">{{ book.label_counts_snapshot }}</p>
+    <p class="lab-caption" id="label-counts-snapshot">{{ review_text }}</p>
+    {% if review_error %}
+    <p class="lab-caption">{{ review_error }}</p>
+    {% endif %}
+    {% for line in review_warnings %}
+    <p class="lab-caption">{{ line }}</p>
+    {% endfor %}
+    {% for line in review_errors %}
+    <p class="lab-alert" role="alert">{{ line }}</p>
+    {% endfor %}
+  </details>
+  <details id="step-snapshot" class="lab-step" data-state="{{ steps[3].state }}"{% if steps[3].state == "current" %} open{% endif %}>
+    <summary>
+      <span class="lab-section">{{ steps[3].title }}</span>
+      <span class="lab-step-status">{{ steps[3].status }}</span>
+      {% if snapshot_other %}<span class="lab-caption">{{ snapshot_other }}</span>
+      {% elif steps[3].waiting_reason %}<span class="lab-caption">{{ steps[3].waiting_reason }}</span>{% endif %}
+    </summary>
+    <p class="lab-step-text">{{ steps[3].instruction }}</p>
+    <p class="lab-caption" id="snapshot-gate-scope">{{ book.snapshot_gate_scope }}</p>
+    <p class="lab-caption">{{ snapshot_reason }}</p>
+    <form class="lab-form" method="post" action="/data/snapshot">
+      <button type="submit" class="lab-button" title="{{ snapshot_reason }}"{% if not snapshot_enabled %} disabled{% endif %}>{{ book.snapshot_dataset }}</button>
+    </form>
+  </details>
+  <script>
+    document.querySelectorAll(".lab-steps a").forEach(function (link) {
+      link.addEventListener("click", function () {
+        var href = link.getAttribute("href") || "";
+        if (href.charAt(0) !== "#") {
+          return;
+        }
+        var panel = document.getElementById(href.slice(1));
+        if (panel && panel.tagName === "DETAILS") {
+          panel.open = true;
+        }
+      });
+    });
+  </script>
+  {% else %}
   <section>
+    <p class="lab-caption" id="snapshot-gate-scope">{{ book.snapshot_gate_scope }}</p>
     <p class="lab-caption">{{ snapshot_reason }}</p>
     <form class="lab-form" method="post" action="/data/snapshot">
       <button type="submit" class="lab-button" title="{{ snapshot_reason }}"{% if not snapshot_enabled %} disabled{% endif %}>{{ book.snapshot_dataset }}</button>
@@ -201,7 +284,12 @@
   </section>
   <section>
     <h2 class="lab-section">{{ book.review_heading }}</h2>
-    <p class="lab-caption">{{ review_text }}</p>
+    <p class="lab-caption">{{ book.label_counts_this_video }}</p>
+    <p class="lab-caption" id="label-counts-video">{{ label_counts_video }}</p>
+    <p class="lab-caption">{{ book.label_counts_project }}</p>
+    <p class="lab-caption" id="label-counts-project">{{ label_counts_project }}</p>
+    <p class="lab-caption">{{ book.label_counts_snapshot }}</p>
+    <p class="lab-caption" id="label-counts-snapshot">{{ review_text }}</p>
     {% if review_error %}
     <p class="lab-caption">{{ review_error }}</p>
     {% endif %}
@@ -212,5 +300,6 @@
     <p class="lab-alert" role="alert">{{ line }}</p>
     {% endfor %}
   </section>
+  {% endif %}
 </div>
 {% endblock %}

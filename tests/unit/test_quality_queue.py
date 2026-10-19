@@ -9,12 +9,12 @@ from pathlib import Path
 import pytest
 
 from excavation_lab import storage
-from excavation_lab.datasets.episodes import EpisodeSpec
+from excavation_lab.datasets.blocks import RoleBlock
+from excavation_lab.datasets.catalog import list_catalogs
 from excavation_lab.datasets.splits import (
     freeze_split,
     frozen_manifest_path,
-    propose_split,
-    write_proposal,
+    write_blocks,
 )
 from excavation_lab.errors import DatasetHashMismatchError as ErrorsHashError
 from excavation_lab.errors import LabError
@@ -57,10 +57,10 @@ _REPORT_KEYS = (
     "iou",
     "max_detections",
 )
-_EPISODES = (
-    EpisodeSpec("train-ep", "vid", "g-train", 0, 60, "погрузка"),
-    EpisodeSpec("val-ep", "vid", "g-val", 72, 92, "погрузка"),
-    EpisodeSpec("test-ep", "vid", "g-test", 104, 124, "погрузка"),
+_BLOCKS = (
+    RoleBlock(start_s=0, end_s=60, role="train"),
+    RoleBlock(start_s=72, end_s=92, role="validation"),
+    RoleBlock(start_s=104, end_s=124, role="test"),
 )
 
 
@@ -82,7 +82,8 @@ def _numbers(value: object) -> list[float]:
 
 def _project(tmp_path: Path) -> Path:
     workspace = tmp_path / "workspace"
-    storage.create_project("pilot", workspace)
+    list_catalogs(workspace)
+    storage.create_project("pilot", workspace, catalog_id="excavation")
     return workspace
 
 
@@ -97,19 +98,14 @@ def _write_json(workspace: Path, eval_id: str, name: str, document: object) -> N
 
 def _freeze(workspace: Path) -> Path:
     storage.insert_video(workspace, "pilot", "vid", name="pilot")
-    proposal = propose_split("vid", _EPISODES)
-    manifest = write_proposal(workspace, "pilot", proposal)
+    manifest = write_blocks(workspace, "pilot", "vid", list(_BLOCKS))
     frozen, path = freeze_split(workspace, "pilot", manifest)
-    assert [episode.split.value for episode in frozen.episodes] == [
-        "train",
-        "validation",
-        "test",
-    ]
+    assert [block.role for block in frozen.blocks] == ["train", "validation", "test"]
     return path
 
 
 def _write_sample(workspace: Path) -> None:
-    """Sample split column lies. The frozen episode is the authority."""
+    """Sample split column lies. The block at source_time_s is the authority."""
     directory = storage.project_directory(workspace, "pilot") / "samples" / "vid"
     directory.mkdir(parents=True)
     document = {
@@ -218,6 +214,46 @@ def test_missing_metrics_json_is_not_computed_not_zero(tmp_path: Path) -> None:
     assert _numbers(report) == [1.0]
     assert metric_text(None) == NOT_CALCULATED
     assert metric_text(report["classes"]["bucket"]["ap50"]) == NOT_CALCULATED
+
+
+    assert metric_text(report["classes"]["bucket"]["ap50"]) == NOT_CALCULATED
+
+
+def test_foreign_class_names_do_not_show_zero(tmp_path: Path) -> None:
+    workspace = _project(tmp_path)
+    _write_json(
+        workspace,
+        "run-shovel",
+        "metrics.json",
+        {
+            "dataset_hash": _HASH_A,
+            "split": "validation",
+            "class_names": ["shovel"],
+            "classes": {
+                "shovel": {"ap50": None},
+                "bucket": {"ap50": 0, "precision": 0, "recall": 0},
+                "truck_bed": {"ap50": 0},
+            },
+            "targets": {
+                "haul_truck": {
+                    "precision": {"target": 0.9, "value": 0, "status": "target"},
+                    "recall": {"target": 0.9, "value": 0, "status": "target"},
+                },
+                "bucket": {
+                    "precision": {"target": 0.9, "value": 0, "status": "target"},
+                    "recall": {"target": 0.9, "value": 0, "status": "target"},
+                },
+            },
+        },
+    )
+    report = load_quality_report(workspace, "pilot", "run-shovel")
+    assert list(report["classes"]) == ["shovel"]
+    assert report["classes"]["shovel"]["ap50"] == NOT_CALCULATED
+    assert "bucket" not in report["classes"]
+    assert "truck_bed" not in report["classes"]
+    assert report["targets"] == {}
+    assert 0 not in _numbers(report)
+    assert metric_text(report["classes"]["shovel"]["ap50"]) == NOT_CALCULATED
 
 
 def test_present_metrics_keep_measured_values_and_null_timings(tmp_path: Path) -> None:

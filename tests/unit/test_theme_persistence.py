@@ -307,7 +307,8 @@ def test_app_injects_css_only_before_navigation() -> None:
     assert "emit_theme_script" not in app
     assert "st.set_page_config" not in app
     assert "st.navigation" not in app
-    context = app[app.index("def _context") :]
+    shell = (REPO_ROOT / "src" / "excavation_lab" / "web" / "shell.py").read_text(encoding="utf-8")
+    context = shell[shell.index("def page_shell") :]
     assert context.index("resolve_theme(") < context.index("nav_links")
     nav = (REPO_ROOT / "src" / "excavation_lab" / "ui" / "navigation.py").read_text(
         encoding="utf-8"
@@ -356,7 +357,9 @@ def test_switch_defaults_dark_and_persists_light(tmp_path: Path) -> None:
         assert ui_copy.THEME_LABEL in first.text
         assert first.text.count(ui_copy.THEME_LABEL) == 1
         assert ui_copy.THEME_DISPLAY_ONLY in first.text
-        assert "<script" not in first.text.lower()
+        assert re.findall(r"<script\b[^>]*>", first.text, flags=re.IGNORECASE) == [
+            '<script src="/static/project_catalog.js">',
+        ]
         assert not preference.exists()
         assert 'name="theme"' in first.text
 

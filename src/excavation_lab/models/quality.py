@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from excavation_lab.datasets.blocks import assignment_at as role_at
 from excavation_lab.datasets.splits import require_frozen
 from excavation_lab.errors import (
     DatasetHashMismatchError,
@@ -232,12 +233,26 @@ def _evaluated(document: Mapping[str, Any] | None, reviewed: object) -> object:
     return reviewed
 
 
+def _listed_class_names(document: Mapping[str, Any] | None) -> list[str] | None:
+    """Bundle ``class_names`` when the metrics file recorded them."""
+    if not isinstance(document, Mapping):
+        return None
+    listed = document.get("class_names")
+    if isinstance(listed, (str, bytes)) or not isinstance(listed, list):
+        return None
+    if not listed or not all(isinstance(item, str) and item for item in listed):
+        return None
+    return list(dict.fromkeys(listed))
+
+
 def _classes(document: Mapping[str, Any] | None) -> dict[str, dict[str, object]]:
     raw = document.get("classes") if document is not None else None
     if not isinstance(raw, Mapping):
         raw = {}
+    listed = _listed_class_names(document)
+    order = list(CLASS_NAMES) if listed is None else listed
     built: dict[str, dict[str, object]] = {}
-    for name in CLASS_NAMES:
+    for name in order:
         row = raw.get(name)
         if not isinstance(row, Mapping):
             row = {}
@@ -249,7 +264,15 @@ def _targets(document: Mapping[str, Any] | None) -> dict[str, dict[str, dict[str
     raw = document.get("targets") if document is not None else None
     if not isinstance(raw, Mapping):
         raw = {}
-    names = list(dict.fromkeys(("haul_truck", "bucket", *raw.keys())))
+    listed = _listed_class_names(document)
+    if listed is None:
+        names = list(dict.fromkeys(("haul_truck", "bucket", *raw.keys())))
+    else:
+        allowed = set(listed)
+        names = [name for name in ("haul_truck", "bucket") if name in allowed]
+        names.extend(
+            str(key) for key in raw if str(key) in allowed and str(key) not in names
+        )
     result: dict[str, dict[str, dict[str, object]]] = {}
     for name in names:
         block = raw.get(name)
@@ -591,55 +614,17 @@ def _unique_clock(
 
 
 def _assignment_at(frozen: object, time_s: float) -> str | None:
-    """Split at ``time_s`` from the frozen episodes, guards, and blocks."""
-    splits = {
-        str(episode.split.value)
-        for episode in frozen.episodes
-        if episode.start_s <= time_s < episode.end_s
-    }
-    if len(splits) > 1:
-        raise LabError("episode_overlap", ui_copy.EPISODE_OVERLAP)
-    if len(splits) == 1:
-        return next(iter(splits))
-    for guard in frozen.guards:
-        if guard.start_s <= time_s < guard.end_s:
-            return str(guard.role)
-    for block in frozen.blocks:
-        if block.start_s <= time_s < block.end_s:
-            return str(block.role)
-    return None
+    """Role of the block that contains ``time_s``, or ``None``."""
+    return role_at(frozen.blocks, time_s)
 
 
 def _shown_split(frozen: object, episode_id: str | None, source_time_s: float) -> str:
-    """Train only when the frozen time says train and the episode does not contradict it.
-
-    A missing time role stays unknown. ``episode_id`` does not fill that gap,
-    and a named episode from another split blocks train.
-    """
+    """Block role at ``source_time_s``. A stored episode id does not choose it."""
+    del episode_id
     role = _assignment_at(frozen, source_time_s)
-    episode_role = _episode_role(frozen, episode_id)
-    if role == "train" and episode_role in {None, "train"}:
-        return "train"
-    if isinstance(role, str) and role != "train":
+    if role in {"train", "validation", "test"}:
         return role
-    if role == "train":
-        return episode_role if episode_role not in {None, "train"} else "unknown"
-    if episode_role not in {None, "train"}:
-        return episode_role
     return "unknown"
-
-
-def _episode_role(frozen: object, episode_id: str | None) -> str | None:
-    if not episode_id:
-        return None
-    matches = [
-        episode for episode in frozen.episodes if episode.episode_id == episode_id
-    ]
-    if not matches:
-        return None
-    if len(matches) != 1:
-        raise LabError("episode_not_found", ui_copy.episode_ambiguous_message(episode_id))
-    return str(matches[0].split.value)
 
 
 def _create_batch(

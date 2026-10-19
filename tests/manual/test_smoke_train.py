@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from excavation_lab.datasets.catalog import list_catalogs
+
 pytestmark = pytest.mark.manual
 
 
@@ -33,7 +35,8 @@ def test_smoke_train_writes_a_loadable_checkpoint(
     monkeypatch.delenv(FAKE_TRAINER_ENV, raising=False)
     monkeypatch.setenv(MANUAL_SMOKE_ENV, "1")
     workspace = tmp_path / "workspace"
-    storage.create_project("pilot", workspace)
+    list_catalogs(workspace)
+    storage.create_project("pilot", workspace, catalog_id="excavation")
     dataset = workspace / "dataset"
     for split, count in (("train", 2), ("valid", 1), ("test", 1)):
         directory = dataset / split

@@ -7,7 +7,9 @@ this directory and named as a custom detector.
 
 ``class_names`` is the class order. Sorting JSON object keys does not define
 that order. An overfit run keeps ``metric_role`` ``diagnostic_overfit`` and
-is not written as a test-quality card.
+is not written as a test-quality card. A synthetic wiring checkpoint keeps
+``synthetic: true`` and ``metric_role`` ``synthetic_wiring``. Its card is
+not a model, and mAP stays uncalculated.
 
 ``load_bundle`` reads ``weights.pth`` through the library safe loader and
 does not open ``training_checkpoint.ckpt``. A metadata-only state dict is
@@ -33,6 +35,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
+from excavation_lab.datasets.catalog import catalog_from_seed
 from excavation_lab.datasets.coco_import import build_class_mapping
 from excavation_lab.datasets.splits import SAME_SCENE_MESSAGE
 from excavation_lab.errors import (
@@ -56,10 +59,16 @@ from excavation_lab.models.baseline import LIBRARY_SCORE_THRESHOLD, _frame_from_
 from excavation_lab.models.preprocess import model_rgb_frame
 from excavation_lab.models.train_config import (
     METRIC_ROLE_DIAGNOSTIC_OVERFIT,
+    METRIC_ROLE_SYNTHETIC_WIRING,
     ResolvedTrainConfig,
 )
 from excavation_lab.schemas import SCHEMA_VERSION
-from excavation_lab.storage import connect, project_directory, project_sqlite
+from excavation_lab.storage import (
+    connect,
+    project_sqlite,
+    published_weights_directory,
+)
+from excavation_lab.ui import copy as ui_copy
 
 NOT_CALCULATED = "не рассчитано"
 CHECKSUMS_NAME = "checksums.json"
@@ -349,13 +358,14 @@ def publish_train_bundle(
     profile: str,
     resolved: ResolvedTrainConfig,
 ) -> Path:
-    """Copy a finished run into ``models/<profile>-<job_id>/``.
+    """Copy a finished run into ``workspace/weights/<profile>-<job_id>/``.
 
-    Does not download weights and does not read the official COCO file as
-    the custom detector. Does not reload the checkpoint.
+    The project row stores that path. The project tree does not keep the
+    only ``weights.pth``. Does not download weights and does not read the
+    official COCO file as the custom detector. Does not reload the checkpoint.
     """
     version = _model_version(profile, job_id)
-    destination = project_directory(workspace, project_id) / "models" / version
+    destination = published_weights_directory(workspace, version)
     weights_path = run_dir / WEIGHTS_NAME
     _reject_official_weights(weights_path, workspace)
     if weights_path.is_symlink() or not weights_path.is_file():
@@ -434,7 +444,10 @@ def _prepare(spec: ModelBundleSpec) -> dict[str, Any]:
             "Флаг проверки другой камеры должен быть логическим значением.",
         )
     independence = _require_independence(spec.split_independence)
-    diagnostic = _is_diagnostic(spec.validation_metrics, spec.resolved_train_config)
+    synthetic = _is_synthetic(spec.validation_metrics, spec.resolved_train_config)
+    diagnostic = (
+        not synthetic and _is_diagnostic(spec.validation_metrics, spec.resolved_train_config)
+    )
     _reject_diagnostic_quality_claim(
         diagnostic,
         spec.validation_metrics,
@@ -442,7 +455,16 @@ def _prepare(spec: ModelBundleSpec) -> dict[str, Any]:
     )
     metrics = _stored_metrics(spec.validation_metrics)
     resolved = _stored_resolved(spec.resolved_train_config)
-    if diagnostic:
+    if synthetic:
+        metrics["synthetic"] = True
+        metrics["metric_role"] = METRIC_ROLE_SYNTHETIC_WIRING
+        metrics["box_map_50_95"] = None
+        metrics["bucket_ap"] = None
+        metrics.pop("quality_claim", None)
+        resolved["synthetic"] = True
+        resolved["metric_role"] = METRIC_ROLE_SYNTHETIC_WIRING
+        resolved.pop("quality_claim", None)
+    elif diagnostic:
         metrics["metric_role"] = METRIC_ROLE_DIAGNOSTIC_OVERFIT
         metrics["diagnostic"] = True
         resolved["metric_role"] = METRIC_ROLE_DIAGNOSTIC_OVERFIT
@@ -460,13 +482,17 @@ def _prepare(spec: ModelBundleSpec) -> dict[str, Any]:
         "origin": "custom",
         "variant": variant,
         "resolution": resolution,
-        "class_names": list(CLASS_NAMES),
+        "class_names": list(mapping["class_names"]),
         "library_versions": versions,
         "dataset_hash": dataset_hash,
         "weights_file": WEIGHTS_NAME,
         "resume_checkpoint": resume is not None,
     }
+    if synthetic:
+        model_config["synthetic"] = True
+        model_config["metric_role"] = METRIC_ROLE_SYNTHETIC_WIRING
     card = _render_card(
+        synthetic=synthetic,
         diagnostic=diagnostic,
         variant=variant,
         resolution=resolution,
@@ -498,6 +524,7 @@ def _prepare(spec: ModelBundleSpec) -> dict[str, Any]:
 
 def _render_card(
     *,
+    synthetic: bool,
     diagnostic: bool,
     variant: str,
     resolution: int,
@@ -513,7 +540,11 @@ def _render_card(
     history_rows: int,
     resume_checkpoint: bool,
 ) -> str:
-    if diagnostic:
+    if synthetic:
+        book = ui_copy.catalog("ru")
+        intended = book.synthetic_card_use
+        role = book.synthetic_card_role
+    elif diagnostic:
         intended = _DIAGNOSTIC_USE
         role = _DIAGNOSTIC_ROLE
     else:
@@ -605,6 +636,15 @@ def _render_card(
     return "\n".join(lines)
 
 
+def _is_synthetic(metrics: Mapping[str, Any], resolved: Mapping[str, Any]) -> bool:
+    if metrics.get("synthetic") is True or resolved.get("synthetic") is True:
+        return True
+    return (
+        metrics.get("metric_role") == METRIC_ROLE_SYNTHETIC_WIRING
+        or resolved.get("metric_role") == METRIC_ROLE_SYNTHETIC_WIRING
+    )
+
+
 def _is_diagnostic(metrics: Mapping[str, Any], resolved: Mapping[str, Any]) -> bool:
     if metrics.get("metric_role") == METRIC_ROLE_DIAGNOSTIC_OVERFIT:
         return True
@@ -690,30 +730,48 @@ def _strip_test_claim(node: object) -> object:
 
 def _class_mapping_document(source: Mapping[str, Any] | None) -> dict[str, Any]:
     if source is None:
-        document = build_class_mapping()
+        document = build_class_mapping(catalog_from_seed())
     else:
         document = _object_copy(source, "class_mapping.json")
     by_name = document.get("by_name")
-    if not isinstance(by_name, dict):
+    if not isinstance(by_name, dict) or not by_name:
         raise LabError("class_order", "В class_mapping.json нет by_name.")
+    document["schema_version"] = SCHEMA_VERSION
+    document["class_names"] = list(_ordered_catalog_names(by_name))
+    return document
+
+
+def _ordered_catalog_names(by_name: Mapping[str, Any]) -> tuple[str, ...]:
+    """Catalog ids in id order. The list is not sorted by name."""
     expected = dict(zip(CLASS_NAMES, range(len(CLASS_NAMES)), strict=True))
-    if set(by_name) != set(expected):
-        raise LabError(
-            "class_order",
-            "class_mapping.json должен содержать ровно четыре класса: "
-            "excavator_body, bucket, haul_truck, truck_bed.",
-        )
-    for name, class_id in expected.items():
-        row = by_name.get(name)
-        found = row.get("internal_id") if isinstance(row, dict) else None
-        if isinstance(found, bool) or found != class_id:
+    slots: dict[int, str] = {}
+    for name, row in by_name.items():
+        if not isinstance(name, str) or not name or isinstance(row, (str, bytes)) or not isinstance(row, Mapping):
+            raise LabError("class_order", "class_mapping.json содержит строку класса без имени.")
+        found = row.get("internal_id")
+        if isinstance(found, bool) or not isinstance(found, int) or found < 0:
+            raise LabError("class_order", f"У класса «{name}» нет целого internal id.")
+        if name in expected and found != expected[name]:
             raise LabError(
                 "class_order",
-                f"Порядок классов нарушен: «{name}» должен иметь internal id {class_id}.",
+                f"Порядок классов нарушен: «{name}» должен иметь internal id {expected[name]}.",
             )
-    document["schema_version"] = SCHEMA_VERSION
-    document["class_names"] = list(CLASS_NAMES)
-    return document
+        if name not in expected and found < len(CLASS_NAMES):
+            raise LabError(
+                "class_order",
+                f"Имя «{name}» не получает internal id {found}.",
+            )
+        owner = slots.get(found)
+        if owner is not None:
+            raise LabError("class_order", f"internal id {found} уже занят классом «{owner}».")
+        slots[found] = name
+    width = max(slots) + 1
+    if set(slots) != set(range(width)):
+        raise LabError(
+            "class_order",
+            "В class_mapping.json не хватает класса. Порядок не дополняется.",
+        )
+    return tuple(slots[index] for index in range(width))
 
 
 def _manifest_document(manifest: Mapping[str, Any], dataset_hash: str) -> dict[str, Any]:
@@ -1399,11 +1457,6 @@ def _require_class_order(
             f"weights.pth: {', '.join(checkpoint_names)}. "
             "Индексы не переставляются.",
         )
-    if mapping_names != CLASS_NAMES:
-        raise IncompatibleCheckpointError(
-            "Порядок классов должен быть excavator_body, bucket, haul_truck, "
-            "truck_bed. Другой порядок не загружается.",
-        )
     config_names = _string_list(config.get("class_names"))
     if config_names is not None and config_names != mapping_names:
         raise IncompatibleCheckpointError(
@@ -1416,11 +1469,13 @@ def _require_class_order(
 def _mapping_class_names(document: Mapping[str, Any]) -> tuple[str, ...]:
     """Index order is ``internal_id``, not JSON object key order."""
     by_name = document.get("by_name")
-    if isinstance(by_name, (str, bytes)) or not isinstance(by_name, Mapping):
+    if isinstance(by_name, (str, bytes)) or not isinstance(by_name, Mapping) or not by_name:
         raise IncompatibleCheckpointError(
             "В class_mapping.json нет by_name. Порядок классов не читается.",
         )
-    slots: list[str | None] = [None] * len(CLASS_NAMES)
+    listed_names = _string_list(document.get("class_names"))
+    width = len(listed_names) if listed_names else len(by_name)
+    slots: list[str | None] = [None] * width
     for name, row in by_name.items():
         if not isinstance(name, str) or isinstance(row, (str, bytes)) or not isinstance(row, Mapping):
             raise IncompatibleCheckpointError(
@@ -1433,8 +1488,7 @@ def _mapping_class_names(document: Mapping[str, Any]) -> tuple[str, ...]:
             )
         if class_id < 0 or class_id >= len(slots) or slots[class_id] is not None:
             raise IncompatibleCheckpointError(
-                f"internal id {class_id} класса «{name}» выходит за порядок "
-                "из четырёх классов.",
+                f"internal id {class_id} класса «{name}» выходит за список классов.",
             )
         slots[class_id] = name
     if any(slot is None for slot in slots):

@@ -17,7 +17,10 @@ from typing import Annotated, Any, NoReturn
 
 import typer
 
+from excavation_lab.actions.catalog import add_action, list_actions, seed_actions
+from excavation_lab.actions.labels import add_interval, delete_interval, list_intervals
 from excavation_lab.analytics import unavailable_error
+from excavation_lab.datasets.blocks import GUARD_GAP_S, guard_gap_warnings
 from excavation_lab.datasets.coco_import import format_import_summary, import_coco
 from excavation_lab.datasets.cvat_export import export_cvat, format_export_summary
 from excavation_lab.datasets.sampler import format_sample_summary, sample_frames
@@ -50,6 +53,7 @@ from excavation_lab.tracking.export_tables import (
     export_project_run,
     format_csv_export_summary,
 )
+from excavation_lab.ui.copy import action_seed_titles, catalog
 from excavation_lab.visualization.annotate import AnnotateToggles
 from excavation_lab.visualization.export_video import (
     enqueue_video_export,
@@ -110,6 +114,10 @@ def _raise_lab_error(error: LabError, *, json_output: bool) -> NoReturn:
 @project_app.command("create")
 def project_create(
     name: Annotated[str, typer.Option("--name", help="Имя проекта.")],
+    catalog_id: Annotated[
+        str,
+        typer.Option("--catalog", help="Каталог в workspace/catalogs."),
+    ],
     workspace: Annotated[
         Path | None,
         typer.Option(
@@ -124,7 +132,7 @@ def project_create(
 ) -> None:
     """Создать проект и каталоги хранения."""
     try:
-        record = create_project(name, workspace)
+        record = create_project(name, workspace, catalog_id=catalog_id)
     except LabError as exc:
         failure: LabError | None = exc
         record = None
@@ -502,6 +510,23 @@ def _workspace(path: Path | None) -> Path:
     return path
 
 
+def _cli_locale(workspace: Path) -> str:
+    """``en`` when ``ui/locale.txt`` says so. Otherwise Russian."""
+    root = Path(workspace).resolve()
+    path = root / "ui" / "locale.txt"
+    try:
+        if path.is_symlink() or not path.is_file():
+            return "ru"
+        if not path.resolve().is_relative_to(root):
+            return "ru"
+        text = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        return "ru"
+    if text == "en":
+        return "en"
+    return "ru"
+
+
 @video_app.command("add")
 def video_add(
     project: Annotated[str, typer.Option("--project", help="Идентификатор проекта.")],
@@ -603,7 +628,7 @@ def dataset_split_propose(
         typer.Option("--json", help="Печатать JSON-результат."),
     ] = False,
 ) -> None:
-    """Предложить разбиение. Файл ещё не зафиксирован."""
+    """Отказать: разбиение задают блоки оператора. Файл не записывается."""
     root = _workspace(workspace)
     try:
         proposal = propose_for_project(root, project, video)
@@ -648,10 +673,18 @@ def dataset_split_freeze(
         _raise_lab_error(exc, json_output=json_output)
     payload = frozen.model_dump(mode="json")
     payload["path"] = str(path)
+    gaps = guard_gap_warnings(frozen.blocks)
+    payload["guard_gap_warnings"] = [gap.model_dump(mode="json") for gap in gaps]
     if json_output:
         raise typer.Exit(emit(True, data=payload))
     typer.echo(f"Разбиение зафиксировано: {path}")
     typer.echo(f"Хеш: {frozen.content_hash}")
+    for gap in gaps:
+        typer.echo(
+            f"Промежуток между {gap.earlier.role} ({gap.earlier.end_s:g} с) и "
+            f"{gap.later.role} ({gap.later.start_s:g} с) — {gap.gap_s:g} с, "
+            f"меньше {GUARD_GAP_S:g} с. Разбиение зафиксировано как есть."
+        )
 
 
 @dataset_app.command("sample")
@@ -870,6 +903,343 @@ def dataset_snapshot(
     if json_output:
         raise typer.Exit(emit(True, data=result.model_dump(mode="json")))
     typer.echo(format_snapshot_summary(result))
+
+
+actions_app = typer.Typer(
+    no_args_is_help=True,
+    add_completion=False,
+    help="Каталог действий и интервалы на шкале ролика.",
+)
+app.add_typer(actions_app, name="actions")
+
+actions_catalog_app = typer.Typer(
+    no_args_is_help=True,
+    add_completion=False,
+    help="Каталог действий проекта.",
+)
+actions_app.add_typer(actions_catalog_app, name="catalog")
+
+actions_label_app = typer.Typer(
+    no_args_is_help=True,
+    add_completion=False,
+    help="Интервалы действий на видео.",
+)
+actions_app.add_typer(actions_label_app, name="label")
+
+
+def _action_titles(locale: str | None) -> dict[str, str]:
+    chosen = "ru" if locale is None else locale
+    if chosen not in action_seed_titles:
+        raise LabError("invalid_locale", "Язык подписей действий — ru или en.")
+    return dict(action_seed_titles[chosen])
+
+
+@actions_catalog_app.command("list")
+def actions_catalog_list(
+    project: Annotated[str, typer.Option("--project", help="Идентификатор проекта.")],
+    workspace: Annotated[
+        Path | None,
+        typer.Option("--workspace", help="Корень workspace. По умолчанию каталог workspace."),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Печатать JSON-результат.")] = False,
+) -> None:
+    """Показать каталог действий. Пример: --project mvp."""
+    root = _workspace(workspace)
+    try:
+        rows = list_actions(root, project)
+    except LabError as exc:
+        _raise_lab_error(exc, json_output=json_output)
+    payload = [item.model_dump(mode="json") for item in rows]
+    if json_output:
+        raise typer.Exit(emit(True, data=payload))
+    if not payload:
+        typer.echo("Каталог действий пуст.")
+        return
+    for item in rows:
+        typer.echo(f"{item.id}\t{item.name}\t{item.title}")
+
+
+@actions_catalog_app.command("add")
+def actions_catalog_add(
+    project: Annotated[str, typer.Option("--project", help="Идентификатор проекта.")],
+    name: Annotated[str, typer.Option("--name", help="Английский токен действия.")],
+    title: Annotated[str, typer.Option("--title", help="Подпись, как её ввёл оператор.")],
+    workspace: Annotated[
+        Path | None,
+        typer.Option("--workspace", help="Корень workspace. По умолчанию каталог workspace."),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Печатать JSON-результат.")] = False,
+) -> None:
+    """Добавить действие. Пример: --project mvp --name waiting --title Ожидание."""
+    root = _workspace(workspace)
+    try:
+        added = add_action(root, project, name, title)
+    except LabError as exc:
+        _raise_lab_error(exc, json_output=json_output)
+    if json_output:
+        raise typer.Exit(emit(True, data=added.model_dump(mode="json")))
+    typer.echo(f"{added.id}\t{added.name}\t{added.title}")
+
+
+@actions_catalog_app.command("seed")
+def actions_catalog_seed(
+    project: Annotated[str, typer.Option("--project", help="Идентификатор проекта.")],
+    locale: Annotated[
+        str | None,
+        typer.Option("--locale", help="ru или en. По умолчанию ru."),
+    ] = None,
+    workspace: Annotated[
+        Path | None,
+        typer.Option("--workspace", help="Корень workspace. По умолчанию каталог workspace."),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Печатать JSON-результат.")] = False,
+) -> None:
+    """Записать пять исходных действий. Пример: excavation actions catalog seed --project mvp."""
+    root = _workspace(workspace)
+    try:
+        rows = seed_actions(root, project, _action_titles(locale))
+    except LabError as exc:
+        _raise_lab_error(exc, json_output=json_output)
+    payload = [item.model_dump(mode="json") for item in rows]
+    if json_output:
+        raise typer.Exit(emit(True, data=payload))
+    for item in rows:
+        typer.echo(f"{item.id}\t{item.name}\t{item.title}")
+
+
+@actions_label_app.command("add")
+def actions_label_add(
+    project: Annotated[str, typer.Option("--project", help="Идентификатор проекта.")],
+    video: Annotated[str, typer.Option("--video", help="Идентификатор видео.")],
+    start: Annotated[float, typer.Option("--start", help="Начало, секунды источника.")],
+    end: Annotated[float, typer.Option("--end", help="Конец, секунды источника. Интервал полуоткрытый.")],
+    action: Annotated[str, typer.Option("--action", help="Имя действия из каталога.")],
+    annotator: Annotated[
+        str,
+        typer.Option("--annotator", help="Кто разметил интервал."),
+    ] = "operator",
+    workspace: Annotated[
+        Path | None,
+        typer.Option("--workspace", help="Корень workspace. По умолчанию каталог workspace."),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Печатать JSON-результат.")] = False,
+) -> None:
+    """Добавить интервал. Пример: --project mvp --video … --start 12.0 --end 18.5 --action digging."""
+    root = _workspace(workspace)
+    try:
+        interval = add_interval(
+            root,
+            project,
+            video,
+            start,
+            end,
+            action,
+            annotator=annotator,
+        )
+    except LabError as exc:
+        _raise_lab_error(exc, json_output=json_output)
+    if json_output:
+        raise typer.Exit(emit(True, data=interval.model_dump(mode="json")))
+    typer.echo(
+        f"{interval.action_name} [{interval.start_s:g}, {interval.end_s:g}) {interval.label_id}"
+    )
+
+
+@actions_label_app.command("list")
+def actions_label_list(
+    project: Annotated[str, typer.Option("--project", help="Идентификатор проекта.")],
+    video: Annotated[str, typer.Option("--video", help="Идентификатор видео.")],
+    workspace: Annotated[
+        Path | None,
+        typer.Option("--workspace", help="Корень workspace. По умолчанию каталог workspace."),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Печатать JSON-результат.")] = False,
+) -> None:
+    """Интервалы одного видео. Пример: --project mvp."""
+    root = _workspace(workspace)
+    try:
+        rows = list_intervals(root, project, video)
+    except LabError as exc:
+        _raise_lab_error(exc, json_output=json_output)
+    payload = [item.model_dump(mode="json") for item in rows]
+    if json_output:
+        raise typer.Exit(emit(True, data=payload))
+    if not payload:
+        typer.echo("Интервалов действий нет.")
+        return
+    for item in rows:
+        typer.echo(f"{item.action_name} [{item.start_s:g}, {item.end_s:g}) {item.label_id}")
+
+
+@actions_label_app.command("delete")
+def actions_label_delete(
+    project: Annotated[str, typer.Option("--project", help="Идентификатор проекта.")],
+    label: Annotated[str, typer.Option("--label", help="Идентификатор интервала.")],
+    workspace: Annotated[
+        Path | None,
+        typer.Option("--workspace", help="Корень workspace. По умолчанию каталог workspace."),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Печатать JSON-результат.")] = False,
+) -> None:
+    """Удалить интервал. Пример: --project mvp --label …."""
+    root = _workspace(workspace)
+    try:
+        delete_interval(root, project, label)
+    except LabError as exc:
+        _raise_lab_error(exc, json_output=json_output)
+    payload = {"label_id": label}
+    if json_output:
+        raise typer.Exit(emit(True, data=payload))
+    typer.echo(f"Интервал удалён: {label}")
+
+
+@actions_app.command("train")
+def actions_train(
+    project: Annotated[str, typer.Option("--project", help="Идентификатор проекта.")],
+    run: Annotated[
+        list[str] | None,
+        typer.Option("--run", help="Прогон анализа. Повторите флаг для нескольких."),
+    ] = None,
+    epochs: Annotated[
+        int | None,
+        typer.Option("--epochs", min=1, help="Число эпох. По умолчанию 40. Устройство — CPU."),
+    ] = None,
+    workspace: Annotated[
+        Path | None,
+        typer.Option("--workspace", help="Корень workspace. По умолчанию каталог workspace."),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Печатать JSON-результат.")] = False,
+) -> None:
+    """Поставить обучение действий в очередь. Пример: --project mvp --run A --run B."""
+    from excavation_lab.actions.train import ActionTrainConfig, enqueue_action_train
+
+    root = _workspace(workspace)
+    try:
+        config = ActionTrainConfig() if epochs is None else ActionTrainConfig(epochs=epochs)
+        record = enqueue_action_train(root, project, list(run or []), config)
+    except LabError as exc:
+        _raise_lab_error(exc, json_output=json_output)
+    payload = {"job_id": record.job_id}
+    if json_output:
+        raise typer.Exit(emit(True, data=payload))
+    typer.echo(f"Обучение действий поставлено в очередь: {record.job_id}")
+
+
+@actions_app.command("infer")
+def actions_infer(
+    project: Annotated[str, typer.Option("--project", help="Идентификатор проекта.")],
+    run: Annotated[str, typer.Option("--run", help="Один прогон анализа.")],
+    action_model: Annotated[
+        str,
+        typer.Option("--action-model", help="Идентификатор модели действий."),
+    ],
+    min_confidence: Annotated[
+        float | None,
+        typer.Option("--min-confidence", help="Ниже этого порога кадр становится unknown."),
+    ] = None,
+    min_duration: Annotated[
+        float | None,
+        typer.Option("--min-duration", help="Короче этого, секунды, интервал становится unknown."),
+    ] = None,
+    workspace: Annotated[
+        Path | None,
+        typer.Option("--workspace", help="Корень workspace. По умолчанию каталог workspace."),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Печатать JSON-результат.")] = False,
+) -> None:
+    """Поставить инференс действий в очередь. Пример: --project mvp --run ID --action-model ID."""
+    from excavation_lab.actions.infer import enqueue_action_infer
+
+    root = _workspace(workspace)
+    try:
+        record = enqueue_action_infer(
+            root,
+            project,
+            run,
+            action_model,
+            min_confidence=min_confidence,
+            min_duration_s=min_duration,
+        )
+    except LabError as exc:
+        _raise_lab_error(exc, json_output=json_output)
+    payload = {"job_id": record.job_id}
+    if json_output:
+        raise typer.Exit(emit(True, data=payload))
+    typer.echo(f"Инференс действий поставлен в очередь: {record.job_id}")
+
+
+@actions_app.command("evaluate")
+def actions_evaluate(
+    project: Annotated[str, typer.Option("--project", help="Идентификатор проекта.")],
+    job: Annotated[str, typer.Option("--job", help="Задание инференса действий.")],
+    split: Annotated[
+        str,
+        typer.Option("--split", help="validation или test. По умолчанию validation."),
+    ] = "validation",
+    final: Annotated[
+        bool,
+        typer.Option(
+            "--final",
+            help="Финальная оценка split test. Не обучает и не меняет пороги.",
+        ),
+    ] = False,
+    workspace: Annotated[
+        Path | None,
+        typer.Option("--workspace", help="Корень workspace. По умолчанию каталог workspace."),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Печатать JSON-результат.")] = False,
+) -> None:
+    """Оценить инференс действий. Пример: --project mvp --job ID --json."""
+    from excavation_lab.actions.evaluate import (
+        evaluate_actions,
+        format_action_evaluation,
+    )
+
+    root = _workspace(workspace)
+    try:
+        report = evaluate_actions(root, project, job, split=split, final=final)
+    except LabError as exc:
+        _raise_lab_error(exc, json_output=json_output)
+    if json_output:
+        raise typer.Exit(emit(True, data=report.to_dict()))
+    typer.echo(format_action_evaluation(report, catalog(_cli_locale(root))))
+
+
+@actions_app.command("export")
+def actions_export(
+    job: Annotated[str, typer.Option("--job", help="Задание инференса действий.")],
+    csv_path: Annotated[Path, typer.Option("--csv", help="Куда скопировать action_intervals.csv.")],
+    project: Annotated[
+        str | None,
+        typer.Option("--project", help="Идентификатор проекта. Сверяется с заданием."),
+    ] = None,
+    excel: Annotated[
+        bool,
+        typer.Option("--excel", help="Добавить UTF-8 BOM для Excel."),
+    ] = False,
+    workspace: Annotated[
+        Path | None,
+        typer.Option("--workspace", help="Корень workspace. По умолчанию каталог workspace."),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Печатать JSON-результат.")] = False,
+) -> None:
+    """Скопировать интервалы действий. Пример: --job ID --csv intervals.csv."""
+    from excavation_lab.actions.infer import export_action_intervals
+
+    root = _workspace(workspace)
+    try:
+        result = export_action_intervals(
+            root,
+            job,
+            csv_path,
+            excel=excel,
+            project_id=project,
+        )
+    except LabError as exc:
+        _raise_lab_error(exc, json_output=json_output)
+    if json_output:
+        raise typer.Exit(emit(True, data=result))
+    typer.echo(f"Интервалы действий записаны: {result['csv']}")
 
 
 events_app = typer.Typer(

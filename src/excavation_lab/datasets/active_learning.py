@@ -1,10 +1,9 @@
 """Train-only active-learning samples from saved detections.
 
 The selector reads a frozen split and does not call ``propose_split``.
-A frame is train only when ``_shown_split`` says so: the timestamp's role
-is train and the named episode does not contradict it. A missing time role
-is not train. Test, validation, guards, and times outside every episode
-stay out.
+A frame is train only when the block that contains its source second is
+train. A stored episode id does not choose the role. A second in no block
+is not train.
 
 Boxes come from ``detections.parquet`` or an evaluation ``matches.json``.
 Nothing here runs a detector or writes ``_annotations.coco.json``.
@@ -15,7 +14,7 @@ from __future__ import annotations
 import json
 import math
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
@@ -23,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 import pyarrow.parquet as pq
 
+from excavation_lab.datasets.catalog import require_project_catalog
 from excavation_lab.datasets.splits import FrozenSplit, require_frozen
 from excavation_lab.datasets.zones import (
     ZONE_VALID,
@@ -34,7 +34,11 @@ from excavation_lab.datasets.zones import (
 from excavation_lab.errors import LabError
 from excavation_lab.models.quality import _error_rows, _shown_split
 from excavation_lab.schemas import DetectionClassName, load_pilot
-from excavation_lab.storage import connect, get_video, project_directory, project_sqlite
+from excavation_lab.storage import (
+    get_video,
+    project_directory,
+    recorded_model_directory,
+)
 
 if TYPE_CHECKING:
     from excavation_lab.datasets.sampler import SampleResult
@@ -76,6 +80,16 @@ class ActivePick:
 class ActiveSelection:
     picks: tuple[ActivePick, ...]
     reason_reports: dict[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class _EncodedPicks:
+    """Written rows plus what the sampler reports about the read."""
+
+    rows: list[Any] = field(default_factory=list)
+    decode_failed: list[int] = field(default_factory=list)
+    tick_pass: str | None = None
+    tick_pass_reason: str | None = None
 
 
 @dataclass
@@ -129,6 +143,10 @@ def sample_active(
     pilot = load_pilot()
     video = get_video(workspace, project_id, resolved_id)
     zones = _zones_for(project_dir, _view_ids(evidence, video.get("view_id")))
+    rule_names: frozenset[str] = frozenset()
+    if checked_model not in _BASELINE_IDS:
+        catalog = require_project_catalog(workspace, project_id)
+        rule_names = frozenset(item.name for item in catalog.classes)
     selection = select_train_frames(
         frozen,
         video_id=resolved_id,
@@ -142,6 +160,7 @@ def sample_active(
         jump_norm=pilot.jump_norm,
         detection_floor=pilot.detection_floor,
         display_threshold=pilot.display_threshold,
+        class_names=rule_names,
     )
     return _write_selection(
         sampler_mod,
@@ -170,11 +189,20 @@ def select_train_frames(
     jump_norm: float,
     detection_floor: float,
     display_threshold: float,
+    class_names: Collection[str] | None = None,
 ) -> ActiveSelection:
-    """Pick train frames. ``jump_norm`` is the pilot value, with no second default."""
+    """Pick train frames. ``jump_norm`` is the pilot value, with no second default.
+
+    ``bucket_missing_in_working_area`` is emitted only when ``bucket`` is in
+    ``class_names``. ``ambiguous_bed`` is emitted only when ``truck_bed`` is.
+    ``None`` keeps both, so a caller that has not loaded a catalog is unchanged.
+    """
     _require_positive(jump_norm, "Порог скачка координат должен быть положительным числом из конфига.")
     _require_unit_interval(detection_floor, "Нижний порог детекции должен быть числом из конфига.")
     _require_unit_interval(display_threshold, "Порог показа должен быть числом из конфига.")
+    names = None if class_names is None else frozenset(class_names)
+    bed_on = names is None or "truck_bed" in names
+    bucket_on = names is None or "bucket" in names
     frames: dict[tuple[str, int], _Frame] = {}
     status = _status_index(frame_rows, video_id, model_id)
     kept_dets = [
@@ -186,15 +214,16 @@ def select_train_frames(
         _remember(frames, row, video_id)
         if _low_confidence(row, detection_floor, display_threshold):
             _add_reason(frames, row, video_id, "low_confidence")
-        if _ambiguous_bed_detection(row):
+        if bed_on and _ambiguous_bed_detection(row):
             _add_reason(frames, row, video_id, "ambiguous_bed")
-    for row in track_rows:
-        if not _ambiguous_bed_track(row):
-            continue
-        located = _track_frame(row, status, video_id)
-        if located is None:
-            continue
-        _add_located(frames, located, "ambiguous_bed")
+    if bed_on:
+        for row in track_rows:
+            if not _ambiguous_bed_track(row):
+                continue
+            located = _track_frame(row, status, video_id)
+            if located is None:
+                continue
+            _add_located(frames, located, "ambiguous_bed")
     for row in false_positives:
         if _row_video(row, default=video_id) != video_id:
             continue
@@ -203,7 +232,7 @@ def select_train_frames(
         _add_reason(frames, row, video_id, "false_positive")
     _mark_jumps(frames, kept_dets, status, video_id, jump_norm)
     reports: dict[str, str] = {}
-    if _mark_missing_buckets(
+    if bucket_on and _mark_missing_buckets(
         frozen,
         frames,
         kept_dets,
@@ -250,31 +279,14 @@ def _require_model_id(model_id: str) -> str:
 def _has_custom_bundle(workspace: Path, project_id: str, model_id: str) -> bool:
     if model_id in _BASELINE_IDS:
         return False
-    project_dir = project_directory(workspace, project_id)
-    paths = [project_dir / "models" / model_id / "weights.pth"]
-    recorded = _recorded_model_dir(workspace, project_id, model_id)
-    if recorded is not None:
-        paths.append(recorded / "weights.pth")
-    return any(_regular_file(path) for path in paths)
+    recorded = recorded_model_directory(workspace, project_id, model_id)
+    if recorded is None:
+        return False
+    return _regular_file(recorded / "weights.pth")
 
 
 def _regular_file(path: Path) -> bool:
     return path.is_file() and not path.is_symlink()
-
-
-def _recorded_model_dir(workspace: Path, project_id: str, model_id: str) -> Path | None:
-    db_path = project_sqlite(workspace, project_id)
-    with connect(db_path) as connection:
-        row = connection.execute(
-            """
-            SELECT path FROM model_versions
-            WHERE project_id = ? AND model_id = ?
-            """,
-            (project_id, model_id),
-        ).fetchone()
-    if row is None or not isinstance(row["path"], str) or not row["path"]:
-        return None
-    return Path(row["path"])
 
 
 @dataclass(frozen=True, slots=True)
@@ -691,8 +703,7 @@ def _train_picks(
 
 
 def _is_train(frozen: FrozenSplit, frame: _Frame) -> bool:
-    episodes = frame.episodes or {None}
-    return all(_shown_split(frozen, episode, frame.time_s) == "train" for episode in episodes)
+    return _shown_split(frozen, None, frame.time_s) == "train"
 
 
 def _primary(reasons: set[str]) -> str:
@@ -797,10 +808,9 @@ def _write_selection(
         video_id,
     )
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    if not limited:
-        rows: list[Any] = []
-    else:
-        rows = _encode_picks(
+    encoded = _EncodedPicks()
+    if limited:
+        encoded = _encode_picks(
             sampler_mod,
             frozen,
             video_id,
@@ -809,6 +819,7 @@ def _write_selection(
             images_dir,
             spacing,
         )
+    rows = encoded.rows
     from excavation_lab.schemas import SplitCounts
 
     requested, written, shortfall = _counts(requested_train, len(rows))
@@ -825,6 +836,10 @@ def _write_selection(
         manifest_path=str(manifest_path),
         images_dir=str(images_dir),
         reason_reports=dict(selection.reason_reports),
+        sample_schema_version=sampler_mod.SAMPLE_SCHEMA_VERSION,
+        decode_failed=encoded.decode_failed,
+        tick_pass=encoded.tick_pass,
+        tick_pass_reason=encoded.tick_pass_reason,
     )
     manifest_path.write_text(
         json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n",
@@ -841,17 +856,26 @@ def _encode_picks(
     picks: Sequence[ActivePick],
     images_dir: Path,
     spacing: float,
-) -> list[Any]:
+) -> _EncodedPicks:
     from excavation_lab.media.reader import FrameReader
     from excavation_lab.schemas import SplitName
 
     media = sampler_mod._media_path(video.get("path"))
     reader = FrameReader(media, video_id=video_id)
     windows = sampler_mod._windows(frozen, SplitName.train)
-    ticks = {
-        tick.source_frame_index: tick
-        for tick in sampler_mod._collect_ticks(reader, frozen, SplitName.train, windows)
-    }
+    prefer_pts = sampler_mod.probe_is_cfr(video)
+    collected = sampler_mod._collect_ticks(
+        reader,
+        frozen,
+        SplitName.train,
+        windows,
+        prefer_pts=prefer_pts,
+    )
+    if not prefer_pts:
+        collected = sampler_mod.TickPass(
+            collected.ticks, False, sampler_mod._PROBE_NOT_CFR
+        )
+    ticks = {tick.source_frame_index: tick for tick in collected.ticks}
     selected = []
     for pick in picks:
         tick = ticks.get(pick.source_frame_index)
@@ -861,7 +885,7 @@ def _encode_picks(
                 f"Кадр {pick.source_frame_index} не входит в train. "
                 "Подставной кадр не записывается.",
             )
-        if _shown_split(frozen, tick.episode_id or None, tick.source_time_s) != "train":
+        if _shown_split(frozen, None, tick.source_time_s) != "train":
             raise LabError(
                 "frame_missing",
                 f"Кадр {pick.source_frame_index} не входит в train. "
@@ -877,17 +901,26 @@ def _encode_picks(
                 selection_reason=pick.selection_reason,
                 strategy="active",
                 model_version=pick.model_version,
+                source_pts=tick.source_pts,
+                span_end_s=tick.span_end_s,
             )
         )
     sampler_mod.require_sample_spacing(selected, spacing)
     images_dir.mkdir(parents=True, exist_ok=True)
-    encoded = sampler_mod._write_chosen(
+    outcome = sampler_mod._write_chosen(
         reader,
         {SplitName.train: windows},
         selected,
         images_dir,
     )
-    return sampler_mod._rows_with_warnings(encoded)
+    # A tick that did not decode is reported in ``decode_failed`` and counted
+    # as shortfall, the same as the plain sampler. No neighbour replaces it.
+    return _EncodedPicks(
+        rows=sampler_mod._rows_with_warnings(outcome.encoded),
+        decode_failed=list(outcome.decode_failed),
+        tick_pass=collected.name,
+        tick_pass_reason=collected.reason if not collected.used_pts else None,
+    )
 
 
 def _counts(requested_train: int, written_train: int) -> tuple[int, int, int]:

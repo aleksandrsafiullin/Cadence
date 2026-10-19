@@ -13,35 +13,35 @@ from starlette.routing import BaseRoute, Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from excavation_lab import storage
+from excavation_lab.datasets.catalog import (
+    add_class,
+    copy_catalog,
+    create_catalog,
+)
 from excavation_lab.errors import LabError
-from excavation_lab.ui.copy import LANGUAGE_ENGLISH, LANGUAGE_RUSSIAN, catalog
+from excavation_lab.ui.copy import catalog
 from excavation_lab.ui.locale import resolve_locale, write_locale_file
 from excavation_lab.ui.navigation import PAGE_ROUTES as _PAGE_ROUTES
-from excavation_lab.ui.theme import resolve_theme, write_theme_file
+from excavation_lab.ui.theme import write_theme_file
 from excavation_lab.ui.tokens import LAB_THEME_CSS
+from excavation_lab.web.actions_routes import actions_context, actions_routes
 from excavation_lab.web.analysis_routes import analysis_context, analysis_routes
 from excavation_lab.web.data_routes import data_context, data_routes
+from excavation_lab.web.label_routes import label_context, label_routes
 from excavation_lab.web.preferences import (
-    choose_project_id,
     consume_flash,
     write_flash,
     write_project_file,
 )
 from excavation_lab.web.quality_routes import quality_context, quality_routes
 from excavation_lab.web.routes import job_routes, video_context, video_routes
+from excavation_lab.web.shell import RETURN_PATHS, label_return_target, page_shell
 from excavation_lab.web.training_routes import training_context, training_routes
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = PACKAGE_DIR / "templates"
 STATIC_DIR = PACKAGE_DIR / "static"
 
-_ALLOWED_PATHS = frozenset(path for _page_id, path, _attr in _PAGE_ROUTES)
-_EMPTY_ATTR = {
-    "data": "data_empty",
-    "training": "training_empty",
-    "analysis": "analysis_empty",
-    "quality": "quality_empty",
-}
 _ANALYSIS_COOKIES = (
     ("analysis_time_cookie", "lab_analysis_time"),
     ("analysis_mode_cookie", "lab_analysis_mode"),
@@ -55,7 +55,6 @@ _QUALITY_COOKIES = (
 )
 _THEMES = frozenset({"dark", "light"})
 _LOCALES = frozenset({"ru", "en"})
-_TITLE_ATTR = {page_id: attr for page_id, _path, attr in _PAGE_ROUTES}
 
 
 def theme_stylesheet(_request: Request) -> FileResponse:
@@ -97,6 +96,29 @@ async def _post_project(request: Request) -> RedirectResponse:
     return _redirect(target)
 
 
+async def _post_project_create(request: Request) -> RedirectResponse:
+    form = await request.form()
+    target = _safe_next(_text(form.get("next")))
+    workspace = _workspace(request)
+    book = catalog(resolve_locale(workspace, session={}))
+    try:
+        name = _posted_project_name(form)
+        # A blank choice is not the seed. create_project runs only with an id.
+        catalog_id = _posted_catalog(workspace, form)
+        record = storage.create_project(name, workspace, catalog_id=catalog_id)
+    except _ChoiceError as exc:
+        _stash_notice(request, getattr(book, exc.key))
+        return _redirect(target)
+    except LabError as exc:
+        _stash_notice(request, exc.message)
+        return _redirect(target)
+    try:
+        write_project_file(workspace, record["project_id"])
+    except Exception:  # noqa: BLE001 — a failed preference write stays on the page
+        _stash_notice(request, book.project_write_failed)
+    return _redirect(target)
+
+
 async def _post_theme(request: Request) -> RedirectResponse:
     form = await _fields(request)
     target = _safe_next(form.get("next"))
@@ -133,13 +155,16 @@ def create_app(workspace: Path) -> Starlette:
     ]
     routes.extend(video_routes())
     routes.extend(data_routes())
+    routes.extend(label_routes())
     routes.extend(training_routes())
     routes.extend(analysis_routes())
     routes.extend(quality_routes())
+    routes.extend(actions_routes())
     routes.extend(job_routes())
     routes.extend(
         [
             Route("/project", _post_project, methods=["POST"]),
+            Route("/project/create", _post_project_create, methods=["POST"]),
             Route("/theme", _post_theme, methods=["POST"]),
             Route("/locale", _post_locale, methods=["POST"]),
             Route("/static/lab_theme.css", theme_stylesheet, methods=["GET"]),
@@ -155,7 +180,7 @@ def create_app(workspace: Path) -> Starlette:
 
 def _render(request: Request, page_id: str) -> HTMLResponse:
     flash = _take_flash(request)
-    context = _context(request, page_id, flash)
+    context = page_shell(request, page_id, flash)
     selected_video = None
     if page_id == "events":
         name = "events.html"
@@ -182,6 +207,16 @@ def _render(request: Request, page_id: str) -> HTMLResponse:
         extra = quality_context(request, context, flash)
         context.update(extra)
         name = "quality.html"
+    elif page_id == "actions":
+        extra = actions_context(request, context, flash)
+        selected_video = extra.get("selected_video_id")
+        context.update(extra)
+        name = "actions.html"
+    elif page_id == "label":
+        extra = label_context(request, context)
+        selected_video = extra.get("selected_video_id")
+        context.update(extra)
+        name = "label.html"
     else:
         name = "page.html"
     templates: Environment = request.app.state.templates
@@ -200,77 +235,6 @@ def _render(request: Request, page_id: str) -> HTMLResponse:
     for key, cookie_name in _QUALITY_COOKIES:
         _set_cookie(response, cookie_name, context.get(key))
     return response
-
-
-def _context(request: Request, page_id: str, flash: dict[str, str]) -> dict[str, object]:
-    workspace = _workspace(request)
-    theme_name = resolve_theme(workspace, session={})
-    locale_name = resolve_locale(workspace, session={})
-    book = catalog(locale_name)
-    projects, project_error = _projects(workspace)
-    project_id = _selected_project(workspace, projects)
-    current_path = request.url.path if request.url.path in _ALLOWED_PATHS else "/"
-    links = [
-        {
-            "title": getattr(book, attr),
-            "path": path,
-            "current": current == page_id,
-        }
-        for current, path, attr in _PAGE_ROUTES
-    ]
-    empty_attr = _EMPTY_ATTR.get(page_id)
-    return {
-        "lang": locale_name,
-        "theme": theme_name,
-        "product_title": book.product_title,
-        "skip_label": "К содержанию" if locale_name == "ru" else "Skip to content",
-        "kicker_project": book.kicker_project,
-        "kicker_workflow": book.kicker_workflow,
-        "kicker_appearance": book.kicker_appearance,
-        "project_label": book.project_label,
-        "project_help": book.project_help,
-        "no_project": book.no_project,
-        "projects": projects,
-        "project_id": project_id,
-        "project_error": project_error,
-        "nav_links": links,
-        "current_path": current_path,
-        "theme_label": book.theme_label,
-        "theme_light": book.theme_light,
-        "theme_dark": book.theme_dark,
-        "theme_display_only": book.theme_display_only,
-        "locale_label": book.locale_label,
-        "locale_caption": book.locale_caption,
-        "language_russian": LANGUAGE_RUSSIAN,
-        "language_english": LANGUAGE_ENGLISH,
-        "notice": (
-            None
-            if page_id in {"video", "data", "training", "analysis", "quality"}
-            else _sidebar_notice(flash)
-        ),
-        "page_title": getattr(book, _TITLE_ATTR[page_id]),
-        "lead": book.lead(page_id),
-        "empty_state": getattr(book, empty_attr) if empty_attr else "",
-        "events_unavailable": book.events_unavailable,
-        "events_unavailable_caption": book.events_unavailable_caption,
-        "events_v02_caption": book.events_v02_caption,
-        "event_indicator_labels": book.event_indicator_labels,
-        "not_calculated": book.not_calculated,
-    }
-
-
-def _projects(workspace: Path) -> tuple[list[dict[str, str]], str | None]:
-    try:
-        found = storage.list_projects(workspace)
-    except LabError as exc:
-        return [], exc.message
-    return [
-        {"project_id": item["project_id"], "name": item["name"]} for item in found
-    ], None
-
-
-def _selected_project(workspace: Path, projects: list[dict[str, str]]) -> str | None:
-    return choose_project_id(workspace, projects)
 
 
 def _stash_notice(request: Request, text: str) -> None:
@@ -298,14 +262,6 @@ def _take_flash(request: Request) -> dict[str, str]:
     return found
 
 
-def _sidebar_notice(flash: dict[str, str]) -> str | None:
-    for key in ("error", "notice"):
-        value = flash.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return None
-
-
 def _bad_cookie(value: str) -> bool:
     return any(char in value for char in "\r\n;")
 
@@ -322,13 +278,93 @@ def _workspace(request: Request) -> Path:
 
 
 def _safe_next(value: str | None) -> str:
-    if value in _ALLOWED_PATHS:
+    if value in RETURN_PATHS:
         return value
+    target = label_return_target(value)
+    if target is not None:
+        return target
     return "/"
 
 
 def _redirect(target: str) -> RedirectResponse:
     return RedirectResponse(target, status_code=303)
+
+
+class _ChoiceError(Exception):
+    def __init__(self, key: str) -> None:
+        self.key = key
+
+
+def _text(value: object) -> str | None:
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def _token(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip()
+
+
+def _posted_project_name(form: FormData) -> str:
+    name = _token(form.get("name"))
+    if not name:
+        raise _ChoiceError("project_name_required")
+    return name
+
+
+def _posted_catalog(workspace: Path, form: FormData) -> str:
+    mode = form.get("catalog_mode")
+    if mode == "existing":
+        catalog_id = _token(form.get("catalog_id"))
+        if not catalog_id:
+            raise _ChoiceError("catalog_required")
+        return catalog_id
+    if mode != "new":
+        raise _ChoiceError("catalog_required")
+    catalog_id = _token(form.get("new_catalog_id"))
+    if not catalog_id:
+        raise _ChoiceError("catalog_id_required")
+    rows = _posted_rows(form)
+    source = _token(form.get("copy_from"))
+    if source:
+        copy_catalog(workspace, source, catalog_id)
+        for class_name, title, box in rows:
+            add_class(workspace, catalog_id, class_name, title, box)
+        return catalog_id
+    if not rows:
+        raise _ChoiceError("catalog_required")
+    create_catalog(workspace, catalog_id, rows)
+    return catalog_id
+
+
+def _posted_rows(form: FormData) -> list[tuple[str, str, str]]:
+    names = _row_text(form, "class_name")
+    titles = _row_text(form, "class_title")
+    boxes = _row_text(form, "class_box")
+    if names is None or titles is None or boxes is None:
+        raise _ChoiceError("class_row_incomplete")
+    if not (len(names) == len(titles) == len(boxes)):
+        raise _ChoiceError("class_row_incomplete")
+    rows: list[tuple[str, str, str]] = []
+    for name, title, box in zip(names, titles, boxes, strict=True):
+        blank = name.strip() == "" and title.strip() == "" and box.strip() == ""
+        if blank:
+            continue
+        if name.strip() == "" or title.strip() == "" or box.strip() == "":
+            raise _ChoiceError("class_row_incomplete")
+        rows.append((name.strip(), title, box))
+    return rows
+
+
+def _row_text(form: FormData, key: str) -> list[str] | None:
+    found: list[str] = []
+    for item in form.getlist(key):
+        if not isinstance(item, str):
+            return None
+        found.append(item)
+    return found
 
 
 async def _fields(request: Request) -> dict[str, str]:

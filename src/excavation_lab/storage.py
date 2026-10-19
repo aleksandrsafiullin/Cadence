@@ -53,6 +53,55 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 """
 
+_ACTION_CLASSES_SQL = """
+CREATE TABLE IF NOT EXISTS action_classes (
+    project_id TEXT NOT NULL REFERENCES projects(project_id),
+    id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    title TEXT NOT NULL,
+    added_at TEXT NOT NULL,
+    PRIMARY KEY (project_id, id),
+    UNIQUE (project_id, name),
+    CHECK (id >= 0)
+);
+"""
+
+_ACTION_LABELS_SQL = """
+CREATE TABLE IF NOT EXISTS action_labels (
+    label_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(project_id),
+    video_id TEXT NOT NULL REFERENCES videos(video_id),
+    start_s REAL NOT NULL,
+    end_s REAL NOT NULL,
+    action_name TEXT NOT NULL,
+    annotator TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    CHECK (end_s > start_s)
+);
+"""
+
+_ACTION_MODELS_SQL = """
+CREATE TABLE IF NOT EXISTS action_models (
+    action_model_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(project_id),
+    detector_model_id TEXT NOT NULL,
+    source_run_ids TEXT NOT NULL,
+    path TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+"""
+
+_ACTION_INFERENCES_SQL = """
+CREATE TABLE IF NOT EXISTS action_inferences (
+    job_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(project_id),
+    source_run_id TEXT NOT NULL,
+    action_model_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+"""
+
 PROJECT_SUBDIRS: tuple[str, ...] = (
     "media",
     "annotation_batches",
@@ -83,7 +132,8 @@ CREATE TABLE projects (
     workspace_root TEXT NOT NULL,
     extra_roots_json TEXT NOT NULL,
     schema_version INTEGER NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    catalog_id TEXT NOT NULL
 );
 
 CREATE TABLE videos (
@@ -199,6 +249,9 @@ CREATE TABLE views (
 );
 
 {_RUNS_SQL}
+{_ACTION_CLASSES_SQL}
+{_ACTION_LABELS_SQL}
+{_ACTION_MODELS_SQL}
 """
 
 
@@ -219,6 +272,38 @@ class EpisodeRow(TypedDict):
     end_s: float
     label: str
     concurrent: bool
+
+
+class AnalysisRunRecord(TypedDict):
+    run_id: str
+    job_id: str
+    video_id: str
+    model_id: str
+    model_origin: str
+    analysis_fps: float
+    start_s: float
+    end_s: float | None
+    created_at: str
+    run_dir: str
+    completed: bool
+
+
+class ActionModelRecord(TypedDict):
+    action_model_id: str
+    project_id: str
+    detector_model_id: str
+    source_run_ids: list[str]
+    path: str
+    created_at: str
+
+
+class ActionInferenceRecord(TypedDict):
+    job_id: str
+    project_id: str
+    source_run_id: str
+    action_model_id: str
+    path: str
+    created_at: str
 
 
 class VideoRecord(TypedDict):
@@ -279,6 +364,7 @@ def connect(db_path: Path) -> Iterator[sqlite3.Connection]:
     try:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
+        _ensure_action_tables(connection)
         yield connection
         connection.commit()
     except Exception:
@@ -305,14 +391,24 @@ def resolve_allowed_path(path: Path, roots: Sequence[Path]) -> Path:
     raise PathNotAllowedError(str(resolved))
 
 
-def create_project(name: str, workspace: Path | None = None) -> ProjectRecord:
+def create_project(
+    name: str,
+    workspace: Path | None = None,
+    *,
+    catalog_id: str,
+) -> ProjectRecord:
     """Create ``<workspace>/projects/<project_id>/`` and its SQLite file.
 
+    ``catalog_id`` must already be a file under ``workspace/catalogs/``.
+    This does not create that file and does not copy it into the project.
     ``project_id`` is the validated name. ``workspace`` defaults to the repo
     ``workspace/`` directory and is never taken from a home-directory path.
     """
     project_id = validate_project_name(name)
     root = _workspace_root(workspace)
+    from excavation_lab.datasets.catalog import require_catalog_file
+
+    require_catalog_file(root, catalog_id)
     projects = (root / "projects").resolve()
     if not projects.is_relative_to(root):
         raise PathNotAllowedError(str(projects))
@@ -338,6 +434,7 @@ def create_project(name: str, workspace: Path | None = None) -> ProjectRecord:
             project_id=project_id,
             name=name,
             workspace_root=root,
+            catalog_id=catalog_id,
         )
     except Exception:
         _discard_new_project(resolved_leaf, root=root)
@@ -349,6 +446,42 @@ def create_project(name: str, workspace: Path | None = None) -> ProjectRecord:
         project_dir=str(resolved_leaf),
         sqlite_path=str(resolved_leaf / "project.sqlite"),
     )
+
+
+def delete_project(name: str, workspace: Path | None = None) -> None:
+    """Remove ``workspace/projects/<project_id>/`` and nothing above it.
+
+    Does not delete ``workspace/catalogs`` or ``workspace/weights``.
+    A path stored in ``model_versions`` is not followed.
+    Action tables in ``project.sqlite`` go with the project directory.
+    """
+    project_id = validate_project_name(name)
+    root = _workspace_root(workspace)
+    projects_path = root / "projects"
+    if projects_path.is_symlink():
+        raise PathNotAllowedError(str(projects_path))
+    projects = projects_path.resolve()
+    if not projects.is_relative_to(root):
+        raise PathNotAllowedError(str(projects))
+    leaf = projects / project_id
+    if leaf.is_symlink():
+        raise PathNotAllowedError(str(leaf))
+    if not leaf.exists():
+        raise LabError(
+            "project_not_found",
+            f"Проект «{project_id}» уже удалён.",
+        )
+    if not leaf.is_dir():
+        raise PathNotAllowedError(str(leaf))
+    resolved = leaf.resolve()
+    if (
+        resolved == projects
+        or resolved == root
+        or resolved.parent != projects
+        or not resolved.is_relative_to(projects)
+    ):
+        raise PathNotAllowedError(str(resolved))
+    shutil.rmtree(resolved)
 
 
 def project_directory(workspace: Path, project_id: str) -> Path:
@@ -363,6 +496,52 @@ def project_directory(workspace: Path, project_id: str) -> Path:
     if not directory.is_relative_to(root):
         raise PathNotAllowedError(str(directory))
     return directory
+
+
+def published_weights_directory(workspace: Path, model_id: str) -> Path:
+    """``workspace/weights/<model_id>``. Not the official COCO cache."""
+    if (
+        not isinstance(model_id, str)
+        or not model_id
+        or model_id in {".", ".."}
+        or "/" in model_id
+        or "\\" in model_id
+        or "\x00" in model_id
+    ):
+        raise LabError("invalid_model_version", "Недопустимое имя версии модели.")
+    root = Path(workspace).resolve()
+    weights = (root / "weights").resolve()
+    if not weights.is_relative_to(root):
+        raise PathNotAllowedError(str(weights))
+    destination = (weights / model_id).resolve()
+    if destination.parent != weights or not destination.is_relative_to(weights):
+        raise PathNotAllowedError(str(destination))
+    return destination
+
+
+def recorded_model_directory(
+    workspace: Path,
+    project_id: str,
+    model_id: str,
+) -> Path | None:
+    """Directory stored in ``model_versions.path`` for this project and id.
+
+    A project-local ``models/`` directory is not consulted.
+    """
+    db_path = project_sqlite(workspace, project_id)
+    if not db_path.is_file() or db_path.is_symlink():
+        return None
+    with connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT path FROM model_versions
+            WHERE project_id = ? AND model_id = ?
+            """,
+            (project_id, model_id),
+        ).fetchone()
+    if row is None or not isinstance(row["path"], str) or not row["path"].strip():
+        return None
+    return Path(row["path"])
 
 
 def project_sqlite(workspace: Path, project_id: str) -> Path:
@@ -644,6 +823,70 @@ def get_analysis_run(workspace: Path, project_id: str, run_id: str) -> dict[str,
     return dict(row)
 
 
+def list_analysis_runs(
+    workspace: Path,
+    project_id: str,
+    *,
+    video_id: str | None = None,
+    origin: str | None = None,
+) -> list[AnalysisRunRecord]:
+    """Runs for one project, oldest ``created_at`` first.
+
+    ``end_s`` stays ``None`` when the row is a full-video run. ``run_dir`` is
+    ``jobs.run_directory``. ``completed`` is true only when ``lab.sqlite``
+    says that job is ``completed``.
+    """
+    project_id = validate_project_name(project_id)
+    if video_id is not None:
+        _require_token(video_id, "invalid_video_id", "Недопустимый идентификатор видео.")
+    if origin is not None:
+        _require_token(origin, "invalid_run", "Недопустимый источник модели.")
+    clauses = ["project_id = ?"]
+    params: list[Any] = [project_id]
+    if video_id is not None:
+        clauses.append("video_id = ?")
+        params.append(video_id)
+    if origin is not None:
+        clauses.append("model_origin = ?")
+        params.append(origin)
+    db_path = project_sqlite(workspace, project_id)
+    with connect(db_path) as connection:
+        connection.execute(_RUNS_SQL)
+        rows = connection.execute(
+            f"""
+            SELECT
+                run_id, job_id, video_id, model_id, model_origin,
+                analysis_fps, start_s, end_s, created_at
+            FROM runs
+            WHERE {" AND ".join(clauses)}
+            ORDER BY created_at, run_id
+            """,
+            params,
+        ).fetchall()
+    completed = _completed_jobs(workspace, project_id, [row["job_id"] for row in rows])
+    from excavation_lab.jobs import run_directory
+
+    listed: list[AnalysisRunRecord] = []
+    for row in rows:
+        end_s = row["end_s"]
+        listed.append(
+            AnalysisRunRecord(
+                run_id=row["run_id"],
+                job_id=row["job_id"],
+                video_id=row["video_id"],
+                model_id=row["model_id"],
+                model_origin=row["model_origin"],
+                analysis_fps=float(row["analysis_fps"]),
+                start_s=float(row["start_s"]),
+                end_s=None if end_s is None else float(end_s),
+                created_at=row["created_at"],
+                run_dir=str(run_directory(workspace, project_id, row["job_id"])),
+                completed=row["job_id"] in completed,
+            )
+        )
+    return listed
+
+
 def record_analysis_export(
     workspace: Path,
     project_id: str,
@@ -735,6 +978,161 @@ def list_reviews(workspace: Path, project_id: str) -> list[dict[str, Any]]:
             (project_id,),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def insert_action_model(
+    workspace: Path,
+    project_id: str,
+    *,
+    action_model_id: str,
+    detector_model_id: str,
+    source_run_ids: Sequence[str],
+    path: str | Path,
+) -> None:
+    """Store one action model. ``source_run_ids`` is a canonical JSON array.
+
+    List order is preserved. The path is the bundle directory that will hold
+    ``action_bundle.json``. The directory does not have to exist yet.
+    """
+    project_id = validate_project_name(project_id)
+    _require_token(
+        action_model_id,
+        "invalid_action_model",
+        "Недопустимый идентификатор модели действий.",
+    )
+    _require_token(
+        detector_model_id,
+        "invalid_action_model",
+        "Недопустимый идентификатор детектора.",
+    )
+    payload = _canonical_source_run_ids(source_run_ids)
+    stored_path = _action_model_path(path)
+    db_path = project_sqlite(workspace, project_id)
+    with connect(db_path) as connection:
+        try:
+            connection.execute(
+                """
+                INSERT INTO action_models (
+                    action_model_id, project_id, detector_model_id,
+                    source_run_ids, path, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    action_model_id,
+                    project_id,
+                    detector_model_id,
+                    payload,
+                    stored_path,
+                    _utc_now(),
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise LabError(
+                "duplicate_action_model",
+                "Модель действий с таким идентификатором уже есть.",
+            ) from exc
+
+
+def list_action_models(workspace: Path, project_id: str) -> list[ActionModelRecord]:
+    """Action models for one project, oldest first. ``source_run_ids`` is a list."""
+    project_id = validate_project_name(project_id)
+    db_path = project_sqlite(workspace, project_id)
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                action_model_id, project_id, detector_model_id,
+                source_run_ids, path, created_at
+            FROM action_models
+            WHERE project_id = ?
+            ORDER BY created_at, action_model_id
+            """,
+            (project_id,),
+        ).fetchall()
+    listed: list[ActionModelRecord] = []
+    for row in rows:
+        listed.append(
+            ActionModelRecord(
+                action_model_id=row["action_model_id"],
+                project_id=row["project_id"],
+                detector_model_id=row["detector_model_id"],
+                source_run_ids=_parse_source_run_ids(row["source_run_ids"]),
+                path=row["path"],
+                created_at=row["created_at"],
+            )
+        )
+    return listed
+
+
+def insert_action_inference(
+    workspace: Path,
+    project_id: str,
+    *,
+    job_id: str,
+    source_run_id: str,
+    action_model_id: str,
+    path: str | Path,
+) -> None:
+    """Store one finished action-inference job. ``path`` is its run directory."""
+    project_id = validate_project_name(project_id)
+    _require_token(job_id, "invalid_job", "Недопустимый идентификатор задания.")
+    _require_token(source_run_id, "invalid_run", "Недопустимый идентификатор прогона.")
+    _require_token(
+        action_model_id,
+        "invalid_action_model",
+        "Недопустимый идентификатор модели действий.",
+    )
+    stored_path = _action_model_path(path)
+    db_path = project_sqlite(workspace, project_id)
+    with connect(db_path) as connection:
+        try:
+            connection.execute(
+                """
+                INSERT INTO action_inferences (
+                    job_id, project_id, source_run_id, action_model_id, path, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    project_id,
+                    source_run_id,
+                    action_model_id,
+                    stored_path,
+                    _utc_now(),
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise LabError(
+                "duplicate_action_inference",
+                "Инференс действий с таким заданием уже записан.",
+            ) from exc
+
+
+def list_action_inferences(workspace: Path, project_id: str) -> list[ActionInferenceRecord]:
+    """Action inferences for one project, oldest first."""
+    project_id = validate_project_name(project_id)
+    db_path = project_sqlite(workspace, project_id)
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT job_id, project_id, source_run_id, action_model_id, path, created_at
+            FROM action_inferences
+            WHERE project_id = ?
+            ORDER BY created_at, job_id
+            """,
+            (project_id,),
+        ).fetchall()
+    return [
+        ActionInferenceRecord(
+            job_id=row["job_id"],
+            project_id=row["project_id"],
+            source_run_id=row["source_run_id"],
+            action_model_id=row["action_model_id"],
+            path=row["path"],
+            created_at=row["created_at"],
+        )
+        for row in rows
+    ]
 
 
 def get_video(workspace: Path, project_id: str, video_id: str) -> VideoRecord:
@@ -925,50 +1323,89 @@ def insert_episode(
     concurrent: bool = False,
 ) -> None:
     """Insert one episode. ``end_s <= start_s`` is rejected before SQL."""
-    require_half_open_interval(start_s, end_s)
     project_id = validate_project_name(project_id)
-    _require_token(episode_id, "invalid_episode_id", "Недопустимый идентификатор эпизода.")
-    _require_token(video_id, "invalid_video_id", "Недопустимый идентификатор видео.")
-    _require_token(
-        split_group_id,
-        "invalid_split_group_id",
-        "Недопустимый идентификатор группы разбиения.",
+    row = _episode_insert_row(
+        project_id,
+        episode_id=episode_id,
+        video_id=video_id,
+        split_group_id=split_group_id,
+        start_s=start_s,
+        end_s=end_s,
+        label=label,
+        concurrent=concurrent,
     )
-    if concurrent is not True and concurrent is not False:
-        raise LabError(
-            "invalid_episode",
-            "Признак одновременности должен быть логическим.",
-        )
-    if not isinstance(label, str) or not label.strip():
-        raise LabError("invalid_label", "У эпизода должна быть непустая метка.")
     db_path = project_sqlite(workspace, project_id)
     with connect(db_path) as connection:
-        video = connection.execute(
-            """
-            SELECT project_id FROM videos WHERE video_id = ?
-            """,
-            (video_id,),
-        ).fetchone()
-        if video is None or video["project_id"] != project_id:
-            raise LabError("video_not_found", "Видео не найдено в этом проекте.")
-        connection.execute(
-            """
-            INSERT INTO episodes (
-                episode_id, project_id, video_id, split_group_id,
-                start_s, end_s, label, concurrent
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                episode_id,
-                project_id,
-                video_id,
-                split_group_id,
-                float(start_s),
-                float(end_s),
-                label.strip(),
-                1 if concurrent else 0,
-            ),
+        _require_video_row(connection, project_id, video_id)
+        connection.execute(_EPISODE_INSERT, row)
+
+
+def replace_video_episodes(
+    workspace: Path,
+    project_id: str,
+    video_id: str,
+    episodes: Sequence[Mapping[str, Any]],
+) -> None:
+    """Delete one video's episodes and insert ``episodes`` in one transaction.
+
+    Rows for every other video stay. A failed insert rolls the delete back.
+    """
+    project_id = validate_project_name(project_id)
+    _require_token(video_id, "invalid_video_id", "Недопустимый идентификатор видео.")
+    rows = [
+        _episode_insert_row(
+            project_id,
+            episode_id=str(episode["episode_id"]),
+            video_id=video_id,
+            split_group_id=str(episode["split_group_id"]),
+            start_s=episode["start_s"],
+            end_s=episode["end_s"],
+            label=episode["label"],
+            concurrent=episode["concurrent"],
         )
+        for episode in episodes
+    ]
+    db_path = project_sqlite(workspace, project_id)
+    with connect(db_path) as connection:
+        _require_video_row(connection, project_id, video_id)
+        try:
+            connection.execute(
+                """
+                DELETE FROM episodes
+                WHERE project_id = ? AND video_id = ?
+                """,
+                (project_id, video_id),
+            )
+            if rows:
+                connection.executemany(_EPISODE_INSERT, rows)
+        except sqlite3.IntegrityError as exc:
+            raise LabError(
+                "duplicate_episode",
+                "Идентификатор эпизода повторяется.",
+            ) from exc
+
+
+def other_episode_ids(workspace: Path, project_id: str, video_id: str) -> list[str]:
+    """Episode ids stored on every video except ``video_id``.
+
+    ``episode_id`` is the primary key for the whole project. A new id on
+    this video must skip these. This video's own ids are not reserved:
+    replacing its rows frees them.
+    """
+    project_id = validate_project_name(project_id)
+    _require_token(video_id, "invalid_video_id", "Недопустимый идентификатор видео.")
+    db_path = project_sqlite(workspace, project_id)
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT episode_id
+            FROM episodes
+            WHERE project_id = ? AND video_id != ?
+            ORDER BY episode_id
+            """,
+            (project_id, video_id),
+        ).fetchall()
+    return [str(row["episode_id"]) for row in rows]
 
 
 def list_episodes(workspace: Path, project_id: str, video_id: str) -> list[EpisodeRow]:
@@ -1269,6 +1706,33 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _completed_jobs(workspace: Path, project_id: str, job_ids: Sequence[str]) -> set[str]:
+    """Job ids whose ``lab.sqlite`` status is ``completed``. Missing rows are not."""
+    if not job_ids:
+        return set()
+    from excavation_lab.jobs import lab_database
+
+    path = lab_database(workspace)
+    if path.is_symlink() or not path.is_file():
+        return set()
+    unique = list(dict.fromkeys(job_ids))
+    placeholders = ", ".join("?" * len(unique))
+    with connect(path) as connection:
+        present = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'lab_jobs'"
+        ).fetchone()
+        if present is None:
+            return set()
+        rows = connection.execute(
+            f"""
+            SELECT job_id FROM lab_jobs
+            WHERE project_id = ? AND status = ? AND job_id IN ({placeholders})
+            """,
+            (project_id, JobStatus.completed.value, *unique),
+        ).fetchall()
+    return {row["job_id"] for row in rows}
+
+
 def _positive_export_fps(value: float) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise LabError("invalid_export", "Частота ролика должна быть положительной.")
@@ -1318,6 +1782,81 @@ def _optional_identity(value: object, code: str) -> str | None:
     return text
 
 
+def _canonical_source_run_ids(source_run_ids: Sequence[str]) -> str:
+    """JSON array. Order is the caller's order; keys are not sorted."""
+    if isinstance(source_run_ids, (str, bytes)) or not isinstance(source_run_ids, Sequence):
+        raise LabError(
+            "invalid_action_model",
+            "source_run_ids должен быть списком идентификаторов прогонов.",
+        )
+    ids = list(source_run_ids)
+    if not ids or any(not isinstance(item, str) or not item or "\x00" in item for item in ids):
+        raise LabError(
+            "invalid_action_model",
+            "source_run_ids должен быть непустым списком идентификаторов прогонов.",
+        )
+    return json.dumps(ids, separators=(",", ":"))
+
+
+def _parse_source_run_ids(payload: object) -> list[str]:
+    if not isinstance(payload, str):
+        raise LabError(
+            "invalid_action_model",
+            "Список прогонов модели действий повреждён.",
+        )
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise LabError(
+            "invalid_action_model",
+            "Список прогонов модели действий повреждён.",
+        ) from exc
+    if not isinstance(parsed, list) or any(not isinstance(item, str) for item in parsed):
+        raise LabError(
+            "invalid_action_model",
+            "Список прогонов модели действий повреждён.",
+        )
+    return list(parsed)
+
+
+def _action_model_path(path: str | Path) -> str:
+    if isinstance(path, Path):
+        text = str(path)
+    elif isinstance(path, str):
+        text = path
+    else:
+        text = ""
+    if not text or "\x00" in text:
+        raise LabError("invalid_action_model", "Нужен путь к каталогу модели действий.")
+    return text
+
+
+def _ensure_action_tables(connection: sqlite3.Connection) -> None:
+    """Create action tables on a project database that predates them.
+
+    ``CREATE TABLE IF NOT EXISTS`` does not rebuild a table that is already
+    there, so existing rows stay. A CHECK change, as with ``lab_jobs`` kinds,
+    would copy rows into a new table and only then drop the old one. These
+    tables are new: a missing name is created and an existing name is left
+    untouched. ``lab_jobs`` kinds are not changed here.
+    """
+    names = {
+        str(row["name"])
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    }
+    if "projects" not in names or "videos" not in names:
+        return
+    for statement in (
+        _ACTION_CLASSES_SQL,
+        _ACTION_LABELS_SQL,
+        _ACTION_MODELS_SQL,
+        _ACTION_INFERENCES_SQL,
+    ):
+        connection.execute(statement)
+
+
 def _ensure_text_columns(
     connection: sqlite3.Connection,
     table: str,
@@ -1334,6 +1873,77 @@ def _ensure_text_columns(
             raise LabError("invalid_schema", "Неизвестная колонка проекта.")
         if name not in existing:
             connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} TEXT")
+
+
+_EPISODE_INSERT = """
+INSERT INTO episodes (
+    episode_id, project_id, video_id, split_group_id,
+    start_s, end_s, label, concurrent
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+
+def _episode_insert_row(
+    project_id: str,
+    *,
+    episode_id: str,
+    video_id: str,
+    split_group_id: str,
+    start_s: object,
+    end_s: object,
+    label: object,
+    concurrent: object,
+) -> tuple[object, ...]:
+    if (
+        isinstance(start_s, bool)
+        or isinstance(end_s, bool)
+        or not isinstance(start_s, (int, float))
+        or not isinstance(end_s, (int, float))
+    ):
+        raise LabError(
+            "invalid_interval",
+            "Интервал должен быть полуоткрытым: end_s больше start_s.",
+        )
+    require_half_open_interval(float(start_s), float(end_s))
+    _require_token(episode_id, "invalid_episode_id", "Недопустимый идентификатор эпизода.")
+    _require_token(video_id, "invalid_video_id", "Недопустимый идентификатор видео.")
+    _require_token(
+        split_group_id,
+        "invalid_split_group_id",
+        "Недопустимый идентификатор группы разбиения.",
+    )
+    if concurrent is not True and concurrent is not False:
+        raise LabError(
+            "invalid_episode",
+            "Признак одновременности должен быть логическим.",
+        )
+    if not isinstance(label, str) or not label.strip():
+        raise LabError("invalid_label", "У эпизода должна быть непустая метка.")
+    return (
+        episode_id,
+        project_id,
+        video_id,
+        split_group_id,
+        float(start_s),
+        float(end_s),
+        label.strip(),
+        1 if concurrent else 0,
+    )
+
+
+def _require_video_row(
+    connection: sqlite3.Connection,
+    project_id: str,
+    video_id: str,
+) -> None:
+    video = connection.execute(
+        """
+        SELECT project_id FROM videos WHERE video_id = ?
+        """,
+        (video_id,),
+    ).fetchone()
+    if video is None or video["project_id"] != project_id:
+        raise LabError("video_not_found", "Видео не найдено в этом проекте.")
 
 
 def _require_token(value: str, code: str, message: str) -> None:
@@ -1370,6 +1980,7 @@ def _init_database(
     project_id: str,
     name: str,
     workspace_root: Path,
+    catalog_id: str,
 ) -> None:
     with connect(db_path) as connection:
         connection.executescript(SCHEMA_SQL)
@@ -1377,8 +1988,8 @@ def _init_database(
             """
             INSERT INTO projects (
                 project_id, name, workspace_root, extra_roots_json,
-                schema_version, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                schema_version, created_at, catalog_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project_id,
@@ -1387,6 +1998,7 @@ def _init_database(
                 "[]",
                 SCHEMA_VERSION,
                 _utc_now(),
+                catalog_id,
             ),
         )
 

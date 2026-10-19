@@ -149,6 +149,23 @@ class TimebaseError(LabError):
         super().__init__("timebase", message)
 
 
+class VfrSamplingUnsupportedError(LabError):
+    """The PTS-only tick pass refused a source whose packet step is not constant.
+
+    The caller falls back to decoding. Nothing is sampled from ``frame_index / fps``.
+    """
+
+    def __init__(self, reason: str | None = None) -> None:
+        self.reason = reason
+        detail = f" {reason}" if reason else ""
+        super().__init__(
+            "vfr_sampling_unsupported",
+            "Шаг кадров в контейнере не постоянный. "
+            "Отбор по PTS без декодирования не выполняется; "
+            f"кадры читаются декодированием.{detail}",
+        )
+
+
 class DuplicateFrameError(LabError):
     """One ``source_frame_index`` was produced twice in a single pass."""
 
@@ -171,13 +188,13 @@ class CheckpointMissingError(LabError):
         if path:
             message = (
                 f"Нет весов обученной модели: {path}. "
-                "Положите совместимый bundle с weights.pth и четырьмя классами. "
+                "Положите совместимый bundle с weights.pth и классами выбранного каталога. "
                 "Базовая COCO-модель не подставляется."
             )
         else:
             message = (
                 "Нет весов обученной модели. "
-                "Укажите путь к совместимому bundle с weights.pth и четырьмя классами. "
+                "Укажите путь к совместимому bundle с weights.pth и классами выбранного каталога. "
                 "Базовая COCO-модель не подставляется."
             )
         super().__init__("checkpoint_missing", message)

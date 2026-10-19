@@ -1,8 +1,10 @@
 """Pydantic models for labels, pilot settings, views, and stored rows.
 
-Class 0 is ``excavator_body``, not background. COCO category ids are mapped
-by name elsewhere. ``amp_dtype: null`` is FP32. Null measurements stay null.
-Adapter ``FrameDetections`` lives with ``DetectorAdapter``, not here.
+Class 0 on the excavation seed is ``excavator_body``, not background.
+A workspace catalog may use other names; id 0 is still not background.
+COCO category ids are mapped by name elsewhere. ``amp_dtype: null`` is FP32.
+Null measurements stay null. Adapter ``FrameDetections`` lives with
+``DetectorAdapter``, not here.
 """
 
 from __future__ import annotations
@@ -37,6 +39,8 @@ LABEL_ATTRIBUTES = (
     "reviewed_at",
     "note",
 )
+CATALOG_CLASS_LIMIT = 16
+_CLASS_TOKEN_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _TIME_BASE_RE = re.compile(r"^[1-9][0-9]*/[1-9][0-9]*$")
 _STRICT = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -173,10 +177,25 @@ def _require_class_pair(name: DetectionClassName, class_id: int) -> None:
         raise ValueError(f"{name.value} must use id {expected}, not {class_id}")
 
 
+def _require_fixed_label_lists(
+    visibility: list[Visibility],
+    review_status: list[ReviewStatus],
+    attributes: list[str],
+) -> None:
+    if _enum_values(Visibility) != [item.value for item in visibility]:
+        raise ValueError("visibility must be clear, partial, unlabelable")
+    expected_review = _enum_values(ReviewStatus)
+    if expected_review != [item.value for item in review_status]:
+        raise ValueError("review_status must be unreviewed, reviewed, excluded")
+    if tuple(attributes) != LABEL_ATTRIBUTES:
+        raise ValueError("label attributes do not match the spec list")
+
+
 class LabelClass(StrictModel):
     id: int = Field(ge=0, le=3)
     name: DetectionClassName
     title: str = Field(min_length=1)
+    box: str = Field(min_length=1)
 
     @model_validator(mode="after")
     def id_matches_name(self) -> Self:
@@ -200,13 +219,7 @@ class LabelsConfig(VersionedModel):
             raise ValueError("duplicate class name")
         if ids != [0, 1, 2, 3]:
             raise ValueError("classes must be listed in id order 0..3")
-        if _enum_values(Visibility) != [item.value for item in self.visibility]:
-            raise ValueError("visibility must be clear, partial, unlabelable")
-        expected_review = _enum_values(ReviewStatus)
-        if expected_review != [item.value for item in self.review_status]:
-            raise ValueError("review_status must be unreviewed, reviewed, excluded")
-        if tuple(self.attributes) != LABEL_ATTRIBUTES:
-            raise ValueError("label attributes do not match the spec list")
+        _require_fixed_label_lists(self.visibility, self.review_status, self.attributes)
         return self
 
     def title_for(self, name: DetectionClassName) -> str:
@@ -214,6 +227,53 @@ class LabelsConfig(VersionedModel):
             if item.name == name:
                 return item.title
         raise LabError("unknown_class", "Неизвестный класс детекции.")
+
+
+class CatalogClass(StrictModel):
+    """One workspace-catalog class. Id 0 is a real class, not background.
+
+    ``name`` is the COCO token. ``title`` and ``box`` are operator text.
+    """
+
+    id: int = Field(ge=0)
+    name: str
+    title: str = Field(min_length=1)
+    box: str = Field(min_length=1)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _ascii_token(cls, value: object) -> str:
+        if isinstance(value, str) and _CLASS_TOKEN_RE.fullmatch(value) is not None:
+            return value
+        raise ValueError("class name must be an ASCII token ^[a-z][a-z0-9_]{0,63}$")
+
+
+class CatalogConfig(VersionedModel):
+    """A catalog of 1 to 16 classes. Not the excavation seed.
+
+    ``load_labels`` still returns ``LabelsConfig`` for the four seed names.
+    """
+
+    classes: list[CatalogClass]
+    visibility: list[Visibility]
+    review_status: list[ReviewStatus]
+    attributes: list[str]
+
+    @model_validator(mode="after")
+    def classes_fit_the_catalog(self) -> Self:
+        count = len(self.classes)
+        if count < 1:
+            raise ValueError("a catalog needs at least 1 class")
+        if count > CATALOG_CLASS_LIMIT:
+            raise ValueError(f"a catalog has at most {CATALOG_CLASS_LIMIT} classes")
+        ids = [item.id for item in self.classes]
+        if len(ids) != len(set(ids)):
+            raise ValueError("duplicate class id")
+        names = [item.name for item in self.classes]
+        if len(names) != len(set(names)):
+            raise ValueError("duplicate class name")
+        _require_fixed_label_lists(self.visibility, self.review_status, self.attributes)
+        return self
 
 
 class SplitCounts(StrictModel):
@@ -510,8 +570,10 @@ class EpisodeSplit(VersionedModel):
 
 
 class AnnotationBox(StrictModel):
-    class_name: DetectionClassName
-    class_id: int
+    """Stored label box. ``class_name`` is a catalog token, not a detection enum."""
+
+    class_name: str
+    class_id: int = Field(ge=0)
     visibility: Visibility
     truncated: bool = False
     instance_local_id: str | None = Field(default=None, min_length=1)
@@ -521,9 +583,16 @@ class AnnotationBox(StrictModel):
     y2: float
     note: str | None = None
 
+    @field_validator("class_name", mode="before")
+    @classmethod
+    def _catalog_token(cls, value: object) -> str:
+        token = value.value if isinstance(value, DetectionClassName) else value
+        if isinstance(token, str) and _CLASS_TOKEN_RE.fullmatch(token) is not None:
+            return token
+        raise ValueError("class name must be an ASCII token ^[a-z][a-z0-9_]{0,63}$")
+
     @model_validator(mode="after")
-    def box_matches_class(self) -> Self:
-        _require_class_pair(self.class_name, self.class_id)
+    def positive_box(self) -> Self:
         _require_positive_box(self.x1, self.y1, self.x2, self.y2)
         return self
 
@@ -675,6 +744,10 @@ def read_yaml_mapping(path: Path) -> dict[str, Any]:
 
 
 def load_labels(path: Path | None = None) -> LabelsConfig:
+    """Read the excavation seed (``configs/labels.yaml`` by default).
+
+    This is not a fallback for a project that has no catalog.
+    """
     return LabelsConfig.model_validate(read_yaml_mapping(path or labels_path()))
 
 

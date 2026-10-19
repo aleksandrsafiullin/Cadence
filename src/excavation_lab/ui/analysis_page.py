@@ -147,6 +147,14 @@ class FrameReview:
 
 
 @dataclass(frozen=True, slots=True)
+class BundleOption:
+    """One custom bundle. ``synthetic`` is true only when the config says so."""
+
+    model_id: str
+    synthetic: bool
+
+
+@dataclass(frozen=True, slots=True)
 class FinishedRun:
     run_id: str
     directory: Path
@@ -408,17 +416,20 @@ def playback_file(workspace: Path, project_id: str, run_id: str) -> Path | None:
 
 
 def list_bundles(workspace: Path, project_id: str) -> list[str]:
-    """Custom bundle ids that already have ``weights.pth``. Does not load them."""
-    found: list[str] = []
-    models = storage.project_directory(workspace, project_id) / "models"
-    if models.is_dir() and not models.is_symlink():
-        for child in sorted(models.iterdir()):
-            if child.is_dir() and not child.is_symlink() and (child / "weights.pth").is_file():
-                found.append(child.name)
+    """Custom bundle ids whose stored ``model_versions.path`` has ``weights.pth``.
+
+    A file under the project ``models/`` directory is not a second search.
+    """
+    return [item.model_id for item in list_bundle_options(workspace, project_id)]
+
+
+def list_bundle_options(workspace: Path, project_id: str) -> list[BundleOption]:
+    """Bundle ids plus the synthetic flag stored on ``model_config.json``."""
+    found: list[BundleOption] = []
     try:
         db_path = storage.project_sqlite(workspace, project_id)
     except LabError:
-        return _unique(found)
+        return found
     try:
         with storage.connect(db_path) as connection:
             rows = connection.execute(
@@ -430,15 +441,34 @@ def list_bundles(workspace: Path, project_id: str) -> list[str]:
                 (project_id,),
             ).fetchall()
     except (sqlite3.Error, LabError):
-        return _unique(found)
+        return found
     for row in rows:
         model_id = row["model_id"]
         raw_path = row["path"]
         if not isinstance(model_id, str) or not model_id:
             continue
-        if isinstance(raw_path, str) and Path(raw_path).joinpath("weights.pth").is_file():
-            found.append(model_id)
-    return _unique(found)
+        if not isinstance(raw_path, str) or not raw_path:
+            continue
+        directory = Path(raw_path)
+        weights = directory / "weights.pth"
+        if weights.is_symlink() or not weights.is_file():
+            continue
+        found.append(BundleOption(model_id, _bundle_synthetic(directory)))
+    return _unique_options(found)
+
+
+def bundle_option_label(
+    option: BundleOption,
+    text: ui_copy.Catalog | None = None,
+) -> str:
+    """Id, with the synthetic flag when the bundle recorded one.
+
+    No catalog argument stays Russian.
+    """
+    if not option.synthetic:
+        return option.model_id
+    catalog = _resolved(text)
+    return f"{option.model_id} — {catalog.bundle_synthetic}"
 
 
 def request_analysis(
@@ -1069,6 +1099,29 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 
 def _read_parquet(path: Path) -> list[dict[str, Any]]:
     return pq.read_table(path).to_pylist()
+
+
+def _bundle_synthetic(directory: Path) -> bool:
+    """True only when ``model_config.json`` stores ``synthetic: true``."""
+    path = directory / "model_config.json"
+    if path.is_symlink() or not path.is_file():
+        return False
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    return isinstance(loaded, dict) and loaded.get("synthetic") is True
+
+
+def _unique_options(values: list[BundleOption]) -> list[BundleOption]:
+    found: list[BundleOption] = []
+    seen: set[str] = set()
+    for item in values:
+        if item.model_id in seen:
+            continue
+        seen.add(item.model_id)
+        found.append(item)
+    return found
 
 
 def _unique(values: list[str]) -> list[str]:

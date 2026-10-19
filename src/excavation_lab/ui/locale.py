@@ -19,6 +19,7 @@ _PAGE_IDS: tuple[str, ...] = (
     "training",
     "analysis",
     "quality",
+    "actions",
     "events",
 )
 _LABEL_TO_LOCALE: dict[str, LocaleName] = {

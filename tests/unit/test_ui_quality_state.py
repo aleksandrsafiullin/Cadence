@@ -12,8 +12,9 @@ import pytest
 from starlette.testclient import TestClient
 
 from excavation_lab import storage
-from excavation_lab.datasets.episodes import EpisodeSpec
-from excavation_lab.datasets.splits import freeze_split, propose_split, write_proposal
+from excavation_lab.datasets.blocks import RoleBlock
+from excavation_lab.datasets.catalog import list_catalogs
+from excavation_lab.datasets.splits import freeze_split, write_blocks
 from excavation_lab.errors import DatasetHashMismatchError, LabError
 from excavation_lab.models.bundle import CLASS_NAMES
 from excavation_lab.models.quality import (
@@ -30,10 +31,10 @@ from excavation_lab.web.app import create_app
 
 _HASH_A = "ab" * 32
 _HASH_B = "cd" * 32
-_EPISODES = (
-    EpisodeSpec("train-ep", "vid", "g-train", 0, 60, "погрузка"),
-    EpisodeSpec("val-ep", "vid", "g-val", 72, 92, "погрузка"),
-    EpisodeSpec("test-ep", "vid", "g-test", 104, 124, "погрузка"),
+_BLOCKS = (
+    RoleBlock(start_s=0, end_s=60, role="train"),
+    RoleBlock(start_s=72, end_s=92, role="validation"),
+    RoleBlock(start_s=104, end_s=124, role="test"),
 )
 _CLASS_ROWS = {
     "excavator_body": {
@@ -440,7 +441,8 @@ def _error_project(tmp_path: Path) -> tuple[Path, Path]:
 
 def _project(tmp_path: Path) -> Path:
     workspace = tmp_path / "workspace"
-    storage.create_project("pilot", workspace)
+    list_catalogs(workspace)
+    storage.create_project("pilot", workspace, catalog_id="excavation")
     return workspace
 
 
@@ -455,8 +457,7 @@ def _write_json(workspace: Path, eval_id: str, name: str, document: object) -> N
 
 def _freeze(workspace: Path) -> Path:
     storage.insert_video(workspace, "pilot", "vid", name="pilot")
-    proposal = propose_split("vid", _EPISODES)
-    manifest = write_proposal(workspace, "pilot", proposal)
+    manifest = write_blocks(workspace, "pilot", "vid", list(_BLOCKS))
     _frozen, path = freeze_split(workspace, "pilot", manifest)
     return path
 

@@ -7,7 +7,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _LAB = REPO_ROOT / "src" / "excavation_lab"
-_PACKAGE_DIRS = ("media", "datasets", "models", "tracking", "analytics")
+_PACKAGE_DIRS = ("media", "datasets", "models", "tracking", "analytics", "actions", "ui")
 _MODULE_FILES = ("jobs.py", "storage.py", "hardware.py", "schemas.py")
 _FORBIDDEN = frozenset({"starlette", "jinja2", "streamlit"})
 

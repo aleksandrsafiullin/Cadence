@@ -7,6 +7,7 @@ import importlib.util
 import json
 import re
 from dataclasses import replace
+from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlparse
@@ -19,6 +20,7 @@ import yaml
 from PIL import Image
 from starlette.testclient import TestClient
 
+from excavation_lab.datasets.catalog import list_catalogs
 from excavation_lab.errors import LabError
 from excavation_lab.hardware import official_nano_weights_path
 from excavation_lab.jobs import reopen, request_cancel, start_job
@@ -169,7 +171,8 @@ def _requests(workspace: Path, project_id: str) -> list[Path]:
 
 
 def _clip(tmp_path: Path) -> str:
-    create_project("pilot", tmp_path)
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
     clip = tmp_path / "clip.mp4"
     write_synthetic_mp4(clip, 0.4, 10)
     added = add_video(tmp_path, "pilot", clip)
@@ -258,7 +261,8 @@ def test_empty_header_is_not_calculated_and_draws_no_boxes() -> None:
 
 
 def test_empty_project_screen_has_no_metrics_or_boxes(tmp_path: Path) -> None:
-    create_project("pilot", tmp_path)
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
     with TestClient(create_app(tmp_path)) as client:
         response = client.get("/analysis")
     assert response.status_code == 200
@@ -273,7 +277,9 @@ def test_empty_project_screen_has_no_metrics_or_boxes(tmp_path: Path) -> None:
     assert "<video" not in text.lower()
     assert "<img" not in text.lower()
     assert "<canvas" not in text.lower()
-    assert "<table" not in text.lower()
+    main = re.search(r"<main\b[^>]*>(.*)</main>", text, re.DOTALL)
+    assert main is not None
+    assert "<table" not in main.group(1).lower()
     assert "lab-chart" not in text
     assert "excavator_body" not in text
     assert "Экскаватор" not in text
@@ -661,20 +667,88 @@ def test_custom_without_a_bundle_does_not_enqueue(tmp_path: Path) -> None:
         _stop_jobs(tmp_path, "pilot")
 
 
+def test_bundle_list_shows_the_synthetic_flag_when_the_config_has_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(FAKE_DETECTOR_ENV, "1")
+    _clip(tmp_path)
+    bundle = tmp_path / "weights" / "wire-model"
+    bundle.mkdir(parents=True)
+    (bundle / "weights.pth").write_bytes(b"not-loaded")
+    (bundle / "model_config.json").write_text(
+        json.dumps({"origin": "custom", "synthetic": True, "metric_role": "synthetic_wiring"}),
+        encoding="utf-8",
+    )
+    plain = tmp_path / "weights" / "pit-model"
+    plain.mkdir()
+    (plain / "weights.pth").write_bytes(b"not-loaded")
+    stamped = datetime.now(UTC).isoformat()
+    with connect(project_sqlite(tmp_path, "pilot")) as connection:
+        connection.execute(
+            """
+            INSERT INTO model_versions (
+                model_id, project_id, dataset_id, variant, path, created_at
+            ) VALUES ('pit-model', 'pilot', NULL, 'nano', ?, ?)
+            """,
+            (str(plain.resolve()), stamped),
+        )
+        connection.execute(
+            """
+            INSERT INTO model_versions (
+                model_id, project_id, dataset_id, variant, path, created_at
+            ) VALUES ('wire-model', 'pilot', NULL, 'nano', ?, ?)
+            """,
+            (str(bundle.resolve()), stamped),
+        )
+    russian = ui_copy.catalog("ru")
+    english = ui_copy.catalog("en")
+    options = {
+        item.model_id: item
+        for item in analysis_page.list_bundle_options(tmp_path, "pilot")
+    }
+    assert options["wire-model"].synthetic is True
+    assert options["pit-model"].synthetic is False
+    assert analysis_page.bundle_option_label(options["wire-model"], russian).endswith(
+        russian.bundle_synthetic
+    )
+    assert analysis_page.bundle_option_label(options["wire-model"], english).endswith(
+        english.bundle_synthetic
+    )
+    assert analysis_page.bundle_option_label(options["pit-model"], english) == "pit-model"
+    with TestClient(create_app(tmp_path)) as client:
+        page = client.get("/analysis", params={"mode": "custom"})
+    assert page.status_code == 200
+    assert f"wire-model — {russian.bundle_synthetic}" in page.text
+    assert f"pit-model — {russian.bundle_synthetic}" not in page.text
+    assert 'value="wire-model"' in page.text
+
+
 def test_custom_stores_the_bundle_id(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(FAKE_DETECTOR_ENV, "1")
     video_id = _clip(tmp_path)
-    bundle = project_directory(tmp_path, "pilot") / "models" / "pit-model"
+    bundle = tmp_path / "weights" / "pit-model"
     bundle.mkdir(parents=True)
     (bundle / "weights.pth").write_bytes(b"not-loaded")
+    with connect(project_sqlite(tmp_path, "pilot")) as connection:
+        connection.execute(
+            """
+            INSERT INTO model_versions (
+                model_id, project_id, dataset_id, variant, path, created_at
+            ) VALUES ('pit-model', 'pilot', NULL, 'nano', ?, ?)
+            """,
+            (str(bundle.resolve()), datetime.now(UTC).isoformat()),
+        )
     try:
         with TestClient(create_app(tmp_path)) as client:
             page = client.get("/analysis", params={"mode": "custom"})
             assert page.status_code == 200
-            assert _selected(page.text, "analysis-bundle")[0] == "pit-model"
+            selected = _selected(page.text, "analysis-bundle")
+            assert selected[0] == "pit-model"
+            assert selected[1] == "pit-model"
             _post(
                 client,
                 "/analysis/start",
@@ -825,7 +899,8 @@ def test_zone_preview_draws_vertices_and_keeps_unit_coordinates(tmp_path: Path) 
     assert drawn is not None
     assert rows[0]["x"] == 0.7
 
-    create_project("pilot", tmp_path)
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
     saved = analysis_page.save_zone_table(tmp_path, "pilot", "pit_a", rows)
     assert saved.parent == project_directory(tmp_path, "pilot") / "views"
     loaded = yaml.safe_load(saved.read_text(encoding="utf-8"))

@@ -1,4 +1,4 @@
-"""One train or analyze job per workspace.
+"""One GPU or MPS job per workspace.
 
 The lock is ``<workspace>/lab.sqlite``, shared by every project under that
 root. A second workspace has its own file. Progress is published with
@@ -13,6 +13,7 @@ The ``export`` worker does not. The parent does not.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import math
 import os
@@ -44,7 +45,7 @@ from excavation_lab.storage import (
 PROGRESS_FILENAME = "progress.json"
 DEFAULT_KILL_AFTER_S = 0.75
 _WORKSPACE_ENV = "EXCAVATION_LAB_WORKSPACE"
-_KINDS = frozenset({"train", "analyze", "export"})
+_KINDS = frozenset({"train", "analyze", "export", "action_train", "action_infer"})
 _SLEEP_WORKERS = frozenset({"sleep", "sleep_ignore_term"})
 _ACTIVE = frozenset(
     {
@@ -60,13 +61,41 @@ _TERMINAL = frozenset(
         JobStatus.cancelled.value,
     }
 )
-JobKind = Literal["train", "analyze", "export"]
+# completed outranks cancelled, which outranks failed, which outranks running.
+# A missing status ranks below running and must not replace a terminal file.
+_PROGRESS_RANK = {
+    JobStatus.running.value: 1,
+    JobStatus.failed.value: 2,
+    JobStatus.cancelled.value: 3,
+    JobStatus.completed.value: 4,
+}
+JobKind = Literal["train", "analyze", "export", "action_train", "action_infer"]
 SleepWorker = Literal["sleep", "sleep_ignore_term"]
-WorkerName = Literal["sleep", "sleep_ignore_term", "rfdetr", "analyze", "export"]
+WorkerName = Literal[
+    "sleep",
+    "sleep_ignore_term",
+    "rfdetr",
+    "analyze",
+    "export",
+    "action_train",
+    "action_infer",
+]
 _TRAIN_WORKER = "rfdetr"
 _ANALYZE_WORKER = "analyze"
 _EXPORT_WORKER = "export"
-_WORKERS = _SLEEP_WORKERS | {_TRAIN_WORKER, _ANALYZE_WORKER, _EXPORT_WORKER}
+_ACTION_TRAIN_WORKER = "action_train"
+_ACTION_INFER_WORKER = "action_infer"
+_WORKERS = _SLEEP_WORKERS | {
+    _TRAIN_WORKER,
+    _ANALYZE_WORKER,
+    _EXPORT_WORKER,
+    _ACTION_TRAIN_WORKER,
+    _ACTION_INFER_WORKER,
+}
+_ACTION_TRAIN_FILES = frozenset({"weights.pt", "action_bundle.json"})
+_ACTION_INFER_FILES = frozenset(
+    {"actions.parquet", "action_intervals.csv", "action_run.json"}
+)
 
 _STATUS_SQL = ", ".join(f"'{item.value}'" for item in JobStatus)
 _KIND_SQL = ", ".join(f"'{item}'" for item in sorted(_KINDS))
@@ -153,7 +182,10 @@ def write_progress(run_dir: Path, payload: Mapping[str, Any]) -> Path:
 
     The destination is replaced only after a temp file in the same directory
     holds one complete JSON object. A kill before ``os.replace`` leaves the
-    previous file untouched.
+    previous file untouched. The live file is re-read under an exclusive
+    ``progress.json.lock`` and a less final status is not written.
+    ``completed`` outranks ``cancelled``, then ``failed``, then ``running``.
+    A payload with no status does not replace a terminal file either.
     """
     directory = Path(run_dir)
     directory.mkdir(parents=True, exist_ok=True)
@@ -177,11 +209,80 @@ def write_progress(run_dir: Path, payload: Mapping[str, Any]) -> Path:
             handle.write(body)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp_path, target)
+        with _progress_lock(directory):
+            if _refuses_progress_downgrade(target, parsed):
+                tmp_path.unlink(missing_ok=True)
+                return target
+            _pause_progress_replace(target, parsed)
+            if _refuses_progress_downgrade(target, parsed):
+                tmp_path.unlink(missing_ok=True)
+                return target
+            os.replace(tmp_path, target)
     except BaseException:
         tmp_path.unlink(missing_ok=True)
         raise
     return target
+
+
+@contextmanager
+def _progress_lock(directory: Path) -> Iterator[None]:
+    """Exclusive lock for one progress read and replace. Not held while training."""
+    lock_path = directory / f"{PROGRESS_FILENAME}.lock"
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
+
+
+def _pause_progress_replace(_target: Path, _incoming: Mapping[str, Any]) -> None:
+    """Runs under the progress lock, after the rank read and before replace."""
+    return
+
+
+def _progress_rank(status: object) -> int:
+    if not isinstance(status, str):
+        return 0
+    return _PROGRESS_RANK.get(status, 0)
+
+
+def _refuses_progress_downgrade(target: Path, incoming: Mapping[str, Any]) -> bool:
+    """True when the live file is strictly more final than ``incoming``."""
+    if target.is_symlink() or not target.is_file():
+        return False
+    try:
+        loaded = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(loaded, dict):
+        return False
+    return _progress_rank(loaded.get("status")) > _progress_rank(incoming.get("status"))
+
+
+def _publish_progress(run_dir: Path, **fields: object) -> None:
+    """Merge ``fields`` into ``progress.json`` with the same atomic replace.
+
+    A missing run directory is left alone. A symlink progress file is not
+    read. The replacement is still ``write_progress``.
+    """
+    directory = Path(run_dir)
+    if directory.is_symlink() or not directory.is_dir():
+        return
+    current: dict[str, Any] = {}
+    path = directory / PROGRESS_FILENAME
+    if path.is_file() and not path.is_symlink():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            loaded = None
+        if isinstance(loaded, dict):
+            current = loaded
+    current.update(fields)
+    write_progress(directory, current)
 
 
 def start_job(
@@ -295,6 +396,7 @@ def request_cancel(
             orphaned=False,
         ),
     )
+    _publish_progress(Path(job.run_dir), status=JobStatus.cancelled.value)
     return _to_record(job)
 
 
@@ -337,6 +439,25 @@ def mark_completed(
         ]
         passed = list(artifact_paths) if artifact_paths is not None else []
         _require_artifacts([*produced, *passed])
+    elif job.kind == "action_train":
+        passed = list(artifact_paths) if artifact_paths is not None else []
+        names = {Path(path).name for path in passed}
+        if not _ACTION_TRAIN_FILES <= names:
+            raise LabError(
+                "missing_artifact",
+                "Завершение отклонено: для action_train нужны weights.pt и action_bundle.json.",
+            )
+        _require_artifacts(passed)
+    elif job.kind == "action_infer":
+        passed = list(artifact_paths) if artifact_paths is not None else []
+        names = {Path(path).name for path in passed}
+        if not _ACTION_INFER_FILES <= names:
+            raise LabError(
+                "missing_artifact",
+                "Завершение отклонено: для action_infer нужны "
+                "actions.parquet, action_intervals.csv и action_run.json.",
+            )
+        _require_artifacts(passed)
     else:
         _require_artifacts(artifact_paths)
     if job.status == JobStatus.completed.value:
@@ -378,19 +499,23 @@ def mark_failed(
     job = _require_job(root, project_id, job_id)
     if job.status in _TERMINAL or job.status == JobStatus.cancel_requested.value:
         return _to_record(job)
-    return _to_record(
-        _save(
-            root,
-            replace(
-                job,
-                status=JobStatus.failed.value,
-                partial=False,
-                analyzed_end_s=None,
-                error_code=error_code,
-                orphaned=False,
-            ),
-        )
+    saved = _save(
+        root,
+        replace(
+            job,
+            status=JobStatus.failed.value,
+            partial=False,
+            analyzed_end_s=None,
+            error_code=error_code,
+            orphaned=False,
+        ),
     )
+    _publish_progress(
+        Path(saved.run_dir),
+        status=JobStatus.failed.value,
+        error=error_code,
+    )
+    return _to_record(saved)
 
 
 def worker_job(workspace: Path, job_id: str) -> tuple[str, Path, JobRecord]:
@@ -454,6 +579,17 @@ def _child_main(job_id: str) -> int:
         from excavation_lab.visualization.export_video import run_export_job
 
         return run_export_job(Path(raw).resolve(), job_id)
+    if job.worker == _ACTION_TRAIN_WORKER:
+        from excavation_lab.actions.train import run_action_train_job
+
+        return run_action_train_job(Path(raw).resolve(), job_id)
+    if job.worker == _ACTION_INFER_WORKER:
+        try:
+            from excavation_lab.actions.infer import run_action_infer_job
+        except ImportError:
+            print("action_infer worker is not connected", file=sys.stderr)
+            return 2
+        return run_action_infer_job(Path(raw).resolve(), job_id)
     if job.worker not in _SLEEP_WORKERS:
         print("unsupported worker", file=sys.stderr)
         return 2
@@ -613,6 +749,11 @@ def _reconcile(workspace: Path) -> None:
                 orphaned=True,
             ),
         )
+        _publish_progress(
+            Path(job.run_dir),
+            status=JobStatus.failed.value,
+            error="orphaned",
+        )
 
 
 def _acquire(workspace: Path, job: _StoredJob) -> None:
@@ -663,6 +804,11 @@ def _abandon_start(
                 error_code="spawn_failed",
                 orphaned=False,
             ),
+        )
+        _publish_progress(
+            Path(current.run_dir),
+            status=JobStatus.failed.value,
+            error="spawn_failed",
         )
     except (LabError, sqlite3.Error, OSError):
         return
@@ -921,7 +1067,8 @@ def _require_kind(kind: str) -> None:
     if kind not in _KINDS:
         raise LabError(
             "invalid_job",
-            "Недопустимый тип задания. Допустимы train, analyze и export.",
+            "Недопустимый тип задания. "
+            "Допустимы train, analyze, export, action_train и action_infer.",
         )
 
 
@@ -962,16 +1109,23 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _ensure_export_kind(connection: sqlite3.Connection) -> None:
-    """Rebuild ``lab_jobs`` when an older file rejects kind ``export``.
+def _ensure_kinds(
+    connection: sqlite3.Connection,
+    required: frozenset[str] = _KINDS,
+) -> None:
+    """Rebuild ``lab_jobs`` when its CHECK is missing a current kind.
 
     ``CREATE TABLE IF NOT EXISTS`` does not update a CHECK constraint.
-    Fresh databases already list ``export`` and skip this.
+    Rows are copied into the new table and only then is the old table
+    dropped. A fresh database already lists every kind and skips this.
     """
     row = connection.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'lab_jobs'"
     ).fetchone()
-    if row is None or not row["sql"] or "'export'" in row["sql"]:
+    if row is None or not row["sql"]:
+        return
+    sql = str(row["sql"])
+    if all(f"'{kind}'" in sql for kind in required):
         return
     columns = (
         "job_id, project_id, kind, worker, status, pid, partial, "
@@ -1005,7 +1159,7 @@ def _lab(workspace: Path) -> Iterator[sqlite3.Connection]:
         connection.execute("PRAGMA journal_mode = WAL")
         connection.execute(_LAB_JOBS_SQL)
         connection.execute(_LOCK_SQL)
-        _ensure_export_kind(connection)
+        _ensure_kinds(connection, required=_KINDS)
         yield connection
     finally:
         connection.close()

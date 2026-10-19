@@ -442,6 +442,66 @@ def _step(
     return result, frame
 
 
+def test_catalog_names_gate_the_bucket_associator(tmp_path: Path) -> None:
+    box = (0.0, 0.0, 10.0, 10.0)
+    body = _Body(_track("excavator_body", 0), (0.0, 0.0, 80.0, 40.0))
+    frame = _detections(("bucket",), (_SCORE,), (box,), 0.0)
+    original = np.array(frame.xyxy, copy=True)
+    blocked = BucketAssociator.from_pilot(class_names=frozenset({"shovel"}))
+    skipped = blocked.update(
+        frame,
+        bodies=(body,),
+        source_time_s=0.0,
+        run_id=_RUN,
+        video_id=_VIDEO,
+        view_id=None,
+    )
+    assert skipped.observations == ()
+    assert blocked._tracks == []
+    assert np.array_equal(frame.xyxy, original)
+    assert BucketAssociator.from_pilot(class_names=frozenset({"bucket"})).enabled() is False
+    assert BucketAssociator.from_pilot(class_names=frozenset()).enabled() is False
+    allowed = BucketAssociator.from_pilot(
+        class_names=frozenset({"bucket", "excavator_body"})
+    )
+    opened, kept = _step(allowed, ("bucket",), (_SCORE,), (box,), 0.0, (body,))
+    assert opened.observations
+    assert opened.observations[0].parent_track_id == body.track_id
+    assert kept.class_name == ("bucket",)
+
+    image = np.zeros((32, 32, 3), dtype=np.uint8)
+    detector = _TimedDetector(
+        {
+            0.0: _detections(
+                ("excavator_body", "bucket"),
+                (0.95, _SCORE),
+                ((0.0, 0.0, 20.0, 20.0), box),
+                0.0,
+            )
+        }
+    )
+    out = tmp_path / "foreign"
+    pipeline = AnalyzePipeline(
+        _ListReader([_read_frame(0, 0.0, image)]),
+        detector,
+        run_id=_RUN,
+        output_dir=out,
+        analysis_fps=5,
+        model_version="custom-test",
+        vehicles=VehicleTrackers.from_pilot(analysis_fps=5, tracker_cls=_IdTracker),
+        class_names=frozenset({"shovel"}),
+    )
+    pipeline.run()
+    detections = pq.read_table(out / "detections.parquet").to_pylist()
+    assert {row["class_name"] for row in detections} == {"excavator_body", "bucket"}
+    bucket_row = next(row for row in detections if row["class_name"] == "bucket")
+    assert [float(bucket_row[name]) for name in ("x1", "y1", "x2", "y2")] == pytest.approx(box)
+    status = pq.read_table(out / "frame_status.parquet").to_pylist()
+    assert status[0]["bucket_observation_state"] is None
+    tracks = pq.read_table(out / "track_states.parquet").to_pylist()
+    assert all(row["class_name"] != "bucket" for row in tracks)
+
+
 def _track(class_name: str, local_id: int) -> str:
     return public_track_id(_RUN, _VIDEO, None, class_name, local_id)
 

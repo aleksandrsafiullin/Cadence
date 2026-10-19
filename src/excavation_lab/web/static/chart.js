@@ -211,6 +211,10 @@
     replaceSvg(lossHost(), spec);
   };
 
+  window.labDrawChart = function (host, spec) {
+    replaceSvg(host, spec);
+  };
+
   var embedded = document.getElementById("ap50-chart");
   if (!embedded || !embedded.parentNode) {
     return;
