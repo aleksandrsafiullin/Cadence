@@ -19,7 +19,9 @@ from typer.testing import CliRunner
 from excavation_lab import analytics, storage
 from excavation_lab.analytics import EventRow, TruckVisitRow, unavailable_error
 from excavation_lab.cli import app
+from excavation_lab.datasets.catalog import list_catalogs
 from excavation_lab.ui import copy as ui_copy
+from excavation_lab.web.preferences import write_project_file
 
 _RUNNER = CliRunner()
 _ZERO_TOKEN = re.compile(r"(?<![\d.])0(?:[.,]0+)?%?(?![\d.])")
@@ -256,6 +258,9 @@ def test_events_page_shows_uncomputed_indicators(tmp_path: Path) -> None:
     from excavation_lab.analytics import unavailable_error
     from excavation_lab.web.app import create_app
 
+    list_catalogs(tmp_path)
+    storage.create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     with TestClient(create_app(tmp_path)) as client:
         response = client.get("/events")
     assert response.status_code == 200
@@ -276,7 +281,7 @@ def test_events_page_shows_uncomputed_indicators(tmp_path: Path) -> None:
     _assert_events_source()
 
     ui = tmp_path / "ui"
-    ui.mkdir()
+    ui.mkdir(exist_ok=True)
     (ui / "locale.txt").write_text("en\n", encoding="utf-8")
     book = ui_copy.catalog("en")
     with TestClient(create_app(tmp_path)) as client:

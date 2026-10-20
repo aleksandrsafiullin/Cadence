@@ -28,6 +28,7 @@ from excavation_lab.models.quality import (
 from excavation_lab.ui import copy as ui_copy
 from excavation_lab.ui import quality_page
 from excavation_lab.web.app import create_app
+from excavation_lab.web.preferences import write_project_file
 
 _HASH_A = "ab" * 32
 _HASH_B = "cd" * 32
@@ -443,6 +444,7 @@ def _project(tmp_path: Path) -> Path:
     workspace = tmp_path / "workspace"
     list_catalogs(workspace)
     storage.create_project("pilot", workspace, catalog_id="excavation")
+    write_project_file(workspace, "pilot")
     return workspace
 
 

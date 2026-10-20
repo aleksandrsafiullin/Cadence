@@ -446,6 +446,7 @@ class Catalog:
     events_unavailable_caption: str
     create_project_heading: str
     create_project_name: str
+    create_project_name_hint: str
     create_project_button: str
     catalog_existing: str
     catalog_new: str
@@ -463,6 +464,28 @@ class Catalog:
     class_box_column: str
     catalog_classes_heading: str
     project_write_failed: str
+    rename_project_label: str
+    rename_project_button: str
+    delete_project_button: str
+    delete_project_confirm: str
+    delete_confirm_required: str
+    project_manager_title: str
+    project_manager_close: str
+    project_manager_list: str
+    home_title: str
+    home_lead: str
+    home_empty: str
+    open_project: str
+    back_to_projects: str
+    home_current: str
+    home_created_column: str
+    home_name_column: str
+    home_id_column: str
+    home_catalog_column: str
+    home_videos_column: str
+    home_episodes_column: str
+    home_datasets_column: str
+    home_models_column: str
     label_page_title: str
     label_open_app: str
     label_loading: str
@@ -1355,6 +1378,7 @@ RU = _RussianCatalog(
     events_unavailable_caption="События и показатели в версии 0.1 не рассчитываются.",
     create_project_heading="Новый проект",
     create_project_name="Имя проекта",
+    create_project_name_hint="Латинские буквы, цифры, _ или -, с буквы. Это идентификатор. Отображаемое имя меняется ниже, у уже созданного проекта.",
     create_project_button="Создать проект",
     catalog_existing="Существующий каталог",
     catalog_new="Новый каталог",
@@ -1372,6 +1396,28 @@ RU = _RussianCatalog(
     class_box_column="рамка",
     catalog_classes_heading="Классы каталога",
     project_write_failed="Не удалось записать проект, выбранный проект этого сеанса сохранён.",
+    rename_project_label="Отображаемое имя",
+    rename_project_button="Переименовать",
+    delete_project_button="Удалить проект",
+    delete_project_confirm="Подтверждаю удаление проекта и его файлов",
+    delete_confirm_required="Отметьте подтверждение, чтобы удалить проект.",
+    project_manager_title="Управление проектами",
+    project_manager_close="Закрыть",
+    project_manager_list="Проекты",
+    home_title="Проекты",
+    home_lead="Откройте проект, чтобы перейти к видео. Этот список не считает обучение и качество.",
+    home_empty="Проектов пока нет. Создайте проект, чтобы открыть видео.",
+    open_project="Открыть",
+    back_to_projects="К проектам",
+    home_current="Текущий",
+    home_created_column="Создан, UTC",
+    home_name_column="Имя",
+    home_id_column="Идентификатор",
+    home_catalog_column="Каталог",
+    home_videos_column="Видео",
+    home_episodes_column="Эпизоды",
+    home_datasets_column="Датасеты",
+    home_models_column="Модели",
     label_page_title="Разметка кадра",
     label_open_app="Разметить в приложении",
     label_loading="Разметка кадра ещё не загружена.",
@@ -2096,6 +2142,7 @@ EN = _EnglishCatalog(
     events_unavailable_caption="Events and indicators are not calculated in version 0.1.",
     create_project_heading="New project",
     create_project_name="Project name",
+    create_project_name_hint="Latin letters, digits, _ or -, starting with a letter. This is the id. The display name is changed on a project that already exists.",
     create_project_button="Create project",
     catalog_existing="Existing catalog",
     catalog_new="New catalog",
@@ -2113,6 +2160,28 @@ EN = _EnglishCatalog(
     class_box_column="box",
     catalog_classes_heading="Catalog classes",
     project_write_failed="Could not save the project. This session's project is kept.",
+    rename_project_label="Display name",
+    rename_project_button="Rename",
+    delete_project_button="Delete project",
+    delete_project_confirm="I confirm deleting the project and its files",
+    delete_confirm_required="Check the confirmation to delete the project.",
+    project_manager_title="Manage projects",
+    project_manager_close="Close",
+    project_manager_list="Projects",
+    home_title="Projects",
+    home_lead="Open a project to reach the video. This list does not count training or quality.",
+    home_empty="There are no projects yet. Create a project to open a video.",
+    open_project="Open",
+    back_to_projects="Projects",
+    home_current="Current",
+    home_created_column="Created, UTC",
+    home_name_column="Name",
+    home_id_column="Identifier",
+    home_catalog_column="Catalog",
+    home_videos_column="Videos",
+    home_episodes_column="Episodes",
+    home_datasets_column="Datasets",
+    home_models_column="Models",
     label_page_title="Frame labeling",
     label_open_app="Label in the app",
     label_loading="Frame labeling is not loaded yet.",

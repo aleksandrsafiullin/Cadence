@@ -14,13 +14,14 @@ from excavation_lab.errors import LabError
 from excavation_lab.ui.copy import LANGUAGE_ENGLISH, LANGUAGE_RUSSIAN, catalog
 from excavation_lab.ui.locale import resolve_locale
 from excavation_lab.ui.navigation import PAGE_ROUTES
+from excavation_lab.ui.project_home import display_rows
 from excavation_lab.ui.theme import resolve_theme
 from excavation_lab.ui.workflow import project_stages
 from excavation_lab.web.preferences import choose_project_id
 
 _NAV_PATHS = frozenset(path for _page_id, path, _attr in PAGE_ROUTES)
-# Theme, locale, and project forms may return here. It is not a nav entry.
-RETURN_PATHS = _NAV_PATHS | {"/label"}
+# Theme, locale, and project forms may return to these. They are not nav entries.
+RETURN_PATHS = _NAV_PATHS | {"/", "/label"}
 _EMPTY_ATTR = {
     "data": "data_empty",
     "training": "training_empty",
@@ -42,6 +43,7 @@ def page_shell(request: Request, page_id: str, flash: dict[str, str]) -> dict[st
     book = catalog(locale_name)
     projects, project_error = _projects(workspace)
     project_id = _selected_project(workspace, projects)
+    project_name = _project_name(projects, project_id)
     current_path = request.url.path if request.url.path in RETURN_PATHS else "/"
     if request.url.path == "/label":
         current_path = (
@@ -90,6 +92,8 @@ def page_shell(request: Request, page_id: str, flash: dict[str, str]) -> dict[st
         "no_project": book.no_project,
         "projects": projects,
         "project_id": project_id,
+        "project_name": project_name,
+        "back_to_projects": book.back_to_projects,
         "project_error": project_error,
         "nav_links": links,
         "stages": stages,
@@ -127,6 +131,81 @@ def page_shell(request: Request, page_id: str, flash: dict[str, str]) -> dict[st
         "class_title_column": book.class_title_column,
         "class_box_column": book.class_box_column,
         "catalog_classes_heading": book.catalog_classes_heading,
+        "rename_project_label": book.rename_project_label,
+        "rename_project_button": book.rename_project_button,
+        "delete_project_button": book.delete_project_button,
+        "delete_project_confirm": book.delete_project_confirm,
+    }
+
+
+def home_context(request: Request) -> dict[str, object]:
+    """Project list. No workflow nav and no stepper."""
+    workspace = _workspace(request)
+    theme_name = resolve_theme(workspace, session={})
+    locale_name = resolve_locale(workspace, session={})
+    book = catalog(locale_name)
+    projects, _project_error = _projects(workspace)
+    project_id = _selected_project(workspace, projects) or ""
+    raw_names = {
+        item["project_id"]: item["name"] or ""
+        for item in storage.list_project_summaries(workspace)
+    }
+    rows: list[dict[str, str]] = []
+    for item in display_rows(workspace, book):
+        row = dict(item)
+        row["rename_value"] = raw_names.get(item["project_id"], "")
+        rows.append(row)
+    return {
+        "lang": locale_name,
+        "theme": theme_name,
+        "product_title": book.product_title,
+        "skip_label": "К содержанию" if locale_name == "ru" else "Skip to content",
+        "kicker_appearance": book.kicker_appearance,
+        "current_path": "/",
+        "project_id": project_id,
+        "rows": rows,
+        "home_title": book.home_title,
+        "home_lead": book.home_lead,
+        "home_empty": book.home_empty,
+        "home_current": book.home_current,
+        "open_project": book.open_project,
+        "home_name_column": book.home_name_column,
+        "home_id_column": book.home_id_column,
+        "home_catalog_column": book.home_catalog_column,
+        "home_created_column": book.home_created_column,
+        "home_videos_column": book.home_videos_column,
+        "home_episodes_column": book.home_episodes_column,
+        "home_datasets_column": book.home_datasets_column,
+        "home_models_column": book.home_models_column,
+        "theme_label": book.theme_label,
+        "theme_light": book.theme_light,
+        "theme_dark": book.theme_dark,
+        "theme_display_only": book.theme_display_only,
+        "locale_label": book.locale_label,
+        "locale_caption": book.locale_caption,
+        "language_russian": LANGUAGE_RUSSIAN,
+        "language_english": LANGUAGE_ENGLISH,
+        "catalogs": _catalog_ids(workspace),
+        "create_project_heading": book.create_project_heading,
+        "create_project_name": book.create_project_name,
+        "create_project_name_hint": book.create_project_name_hint,
+        "create_project_button": book.create_project_button,
+        "project_manager_close": book.project_manager_close,
+        "catalog_existing": book.catalog_existing,
+        "catalog_new": book.catalog_new,
+        "catalog_id_label": book.catalog_id_label,
+        "catalog_copy_label": book.catalog_copy_label,
+        "catalog_copy_none": book.catalog_copy_none,
+        "catalog_none": book.catalog_none,
+        "add_class_row": book.add_class_row,
+        "class_name_column": book.class_name_column,
+        "class_title_column": book.class_title_column,
+        "class_box_column": book.class_box_column,
+        "catalog_classes_heading": book.catalog_classes_heading,
+        "rename_project_label": book.rename_project_label,
+        "rename_project_button": book.rename_project_button,
+        "delete_project_button": book.delete_project_button,
+        "delete_project_confirm": book.delete_project_confirm,
     }
 
 
@@ -198,6 +277,15 @@ def _projects(workspace: Path) -> tuple[list[dict[str, str]], str | None]:
 
 def _selected_project(workspace: Path, projects: list[dict[str, str]]) -> str | None:
     return choose_project_id(workspace, projects)
+
+
+def _project_name(projects: list[dict[str, str]], project_id: str | None) -> str:
+    if project_id is None:
+        return ""
+    for item in projects:
+        if item["project_id"] == project_id:
+            return item["name"]
+    return ""
 
 
 def _sidebar_notice(flash: dict[str, str]) -> str | None:

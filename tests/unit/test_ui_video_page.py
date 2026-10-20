@@ -33,7 +33,7 @@ from excavation_lab.ui import video_page
 from excavation_lab.ui.locale import write_locale_file
 from excavation_lab.web.app import create_app
 from excavation_lab.web.choose_file import ChooseFileFailed
-from excavation_lab.web.preferences import write_flash
+from excavation_lab.web.preferences import write_flash, write_project_file
 from excavation_lab.web.uploads import UPLOAD_CAP
 
 _SYNTHETIC_PATH = Path(__file__).resolve().parents[1] / "fixtures" / "synthetic.py"
@@ -290,11 +290,12 @@ def test_both_fps_values_are_shown_when_present() -> None:
 def test_empty_project_names_the_workspace_root(tmp_path: Path) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     with _client(tmp_path) as client:
-        page = client.get("/")
+        page = client.get("/video")
         refused = client.post("/video/add", data={"local_path": "  "}, follow_redirects=False)
-        shown = client.get("/")
-        again = client.get("/")
+        shown = client.get("/video")
+        again = client.get("/video")
     assert page.status_code == 200
     text = page.text
     field = _tagged_input(text, "local-path")
@@ -313,8 +314,12 @@ def test_empty_project_names_the_workspace_root(tmp_path: Path) -> None:
     assert ui_copy.SOURCE_URL_HELP not in text
     assert ui_copy.SOURCE_URL_LABEL not in text
     assert "<summary>Дополнительно</summary>" not in text
-    assert text.count("<summary>") == 1
-    assert f"<summary>{ui_copy.catalog('ru').create_project_heading}</summary>" in text
+    assert text.count("<summary>") == 0
+    assert 'id="project-create-panel"' not in text
+    assert 'id="project-create"' not in text.split("<main", 1)[1].split("</main>", 1)[0]
+    assert 'id="project-manager"' not in text
+    assert 'id="lab-project"' not in text
+    assert 'id="lab-home"' in text
     assert 'type="file"' not in text
     assert 'name="file"' not in text
     assert 'name="local_path"' not in text
@@ -339,7 +344,7 @@ def test_empty_project_names_the_workspace_root(tmp_path: Path) -> None:
         f'<button type="submit" class="lab-button">{ui_copy.CHOOSE_FILE_BUTTON}</button>'
         in text
     )
-    assert _location(refused) == "/"
+    assert _location(refused) == "/video"
     assert ui_copy.PATH_REQUIRED in shown.text
     assert ui_copy.PATH_REQUIRED not in again.text
     assert list_videos(tmp_path, "pilot") == []
@@ -351,6 +356,7 @@ def test_extra_allowed_root_is_named(
 ) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     extra = tmp_path / "clips"
     extra.mkdir()
 
@@ -371,6 +377,7 @@ def test_extra_allowed_root_is_named(
 def test_path_outside_the_root_is_rejected_in_russian(tmp_path: Path) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     with _client(tmp_path) as client:
         response = client.post(
             "/video/add",
@@ -389,6 +396,7 @@ def test_added_file_shows_probe_metadata_and_plays_from_disk(
 ) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     clip = _clip(tmp_path)
     calls = {"n": 0}
     real = video_page.reprobe_video
@@ -457,6 +465,7 @@ def test_added_file_shows_probe_metadata_and_plays_from_disk(
 def test_second_added_file_becomes_the_player(tmp_path: Path) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     first = _clip(tmp_path, "clip.mp4")
     second = _clip(tmp_path, "haul.mp4")
     add_video(tmp_path, "pilot", first)
@@ -478,6 +487,7 @@ def test_second_chosen_file_becomes_the_player(
 ) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     first = _clip(tmp_path, "clip.mp4")
     second = _clip(tmp_path, "haul.mp4")
     original = add_video(tmp_path, "pilot", first)
@@ -511,6 +521,7 @@ def test_source_url_is_stored_and_not_fetched(
 ) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     clip = _clip(tmp_path)
 
     def refuse(*_args: object, **_kwargs: object) -> None:
@@ -519,7 +530,7 @@ def test_source_url_is_stored_and_not_fetched(
     monkeypatch.setattr("urllib.request.urlopen", refuse)
     marker = "https://example.invalid/clip.mp4"
     with _client(tmp_path) as client:
-        page = client.get("/")
+        page = client.get("/video")
         added = client.post(
             "/video/add",
             data={"local_path": str(clip), "source_url": marker},
@@ -537,6 +548,7 @@ def test_source_url_is_stored_and_not_fetched(
 def test_upload_cap_and_traversal_do_not_write(tmp_path: Path) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     assert video_page.upload_rejection(0) == ui_copy.UPLOAD_EMPTY
     assert video_page.upload_rejection(video_page._DIRECT_PLAYBACK_MAX_BYTES + 1) is None
     assert video_page.upload_rejection(8 * 1024 * 1024 * 1024) is None
@@ -562,6 +574,7 @@ def test_real_camera_name_is_a_media_leaf() -> None:
 def test_small_upload_is_registered_by_add_video(tmp_path: Path) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     source = _clip(tmp_path, "source.mp4", 0.3)
     video_page.store_browser_upload(
         tmp_path,
@@ -585,6 +598,7 @@ def test_chooser_registers_the_chosen_file_in_place(
 ) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     source = _clip(tmp_path, "source.mp4", 0.3)
     seen: list[dict[str, object]] = []
     real = add_video
@@ -604,9 +618,9 @@ def test_chooser_registers_the_chosen_file_in_place(
         videos = list_videos(tmp_path, "pilot")
         assert len(videos) == 1
         video_id = str(videos[0]["video_id"])
-        assert _location(posted) == "/"
+        assert _location(posted) == "/video"
         assert f"lab_video={video_id}" in posted.headers["set-cookie"]
-        page = client.get("/")
+        page = client.get("/video")
     assert page.status_code == 200
     assert seen == [{"copy": False}]
     stored = Path(str(videos[0]["path"]))
@@ -628,6 +642,7 @@ def test_choose_cancel_bad_suffix_and_probe_failure_write_nothing(
 ) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     notes = tmp_path / "notes.txt"
     notes.write_bytes(b"notes")
     broken = tmp_path / "broken.mp4"
@@ -656,7 +671,7 @@ def test_choose_cancel_bad_suffix_and_probe_failure_write_nothing(
     monkeypatch.setattr("excavation_lab.ui.video_page.add_video", spy)
     monkeypatch.setattr("excavation_lab.web.routes.choose_video_path", choose)
     with _client(tmp_path) as client:
-        before = client.get("/")
+        before = client.get("/video")
         cancelled = client.post("/video/choose", follow_redirects=True)
         assert _alert_texts(cancelled.text) == _alert_texts(before.text)
         assert ui_copy.CHOOSE_FAILED not in cancelled.text
@@ -697,6 +712,7 @@ def test_choose_outside_workspace_registers_the_file_in_place(
     workspace = tmp_path / "workspace"
     list_catalogs(workspace)
     create_project("pilot", workspace, catalog_id="excavation")
+    write_project_file(workspace, "pilot")
     kept = tmp_path / "kept"
     kept.mkdir()
     replace_extra_roots(workspace, "pilot", [kept])
@@ -729,6 +745,7 @@ def test_choose_undecodable_outside_file_restores_extra_roots(
     workspace = tmp_path / "workspace"
     list_catalogs(workspace)
     create_project("pilot", workspace, catalog_id="excavation")
+    write_project_file(workspace, "pilot")
     kept = tmp_path / "kept"
     kept.mkdir()
     replace_extra_roots(workspace, "pilot", [kept])
@@ -758,6 +775,7 @@ def test_typed_path_outside_roots_does_not_widen_them(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     list_catalogs(workspace)
     create_project("pilot", workspace, catalog_id="excavation")
+    write_project_file(workspace, "pilot")
     kept = tmp_path / "kept"
     kept.mkdir()
     replace_extra_roots(workspace, "pilot", [kept])
@@ -785,6 +803,7 @@ def test_choose_registered_path_selects_the_existing_id(
     workspace = tmp_path / "workspace"
     list_catalogs(workspace)
     create_project("pilot", workspace, catalog_id="excavation")
+    write_project_file(workspace, "pilot")
     clip = _clip(workspace, "clip.mp4", 0.3)
     original = add_video(workspace, "pilot", clip)
 
@@ -795,12 +814,12 @@ def test_choose_registered_path_selects_the_existing_id(
     monkeypatch.setattr("excavation_lab.web.routes.choose_video_path", choose)
     with _client(workspace) as client:
         posted = client.post("/video/choose", follow_redirects=False)
-        page = client.get("/")
+        page = client.get("/video")
     videos = list_videos(workspace, "pilot")
     assert [item["video_id"] for item in videos] == [original["video_id"]]
     assert Path(str(videos[0]["path"])) == clip.resolve()
     assert f"lab_video={original['video_id']}" in posted.headers["set-cookie"]
-    assert _location(posted) == "/"
+    assert _location(posted) == "/video"
     assert _video_src(page.text) == f"/media/pilot/{original['video_id']}"
     assert _input_value(page.text, "video_id") == original["video_id"]
     assert _extra_roots(workspace) == []
@@ -842,6 +861,7 @@ def test_player_file_delegates_other_suffixes(
 ) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     source = tmp_path / "clip.mov"
     source.write_bytes(b"x")
     preview = tmp_path / "previews" / "v.mp4"
@@ -892,6 +912,7 @@ def test_large_mp4_is_served_without_a_preview(
     monkeypatch.setattr("excavation_lab.media.encoder.write_preview", boom)
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     clip = _clip(tmp_path)
     added = add_video(tmp_path, "pilot", clip)
     with connect(project_sqlite(tmp_path, "pilot")) as connection:
@@ -900,7 +921,7 @@ def test_large_mp4_is_served_without_a_preview(
             (video_page._DIRECT_PLAYBACK_MAX_BYTES + 1, added["video_id"]),
         )
     with _client(tmp_path) as client:
-        page = client.get("/")
+        page = client.get("/video")
         assert ui_copy.PLAYBACK_FILE not in page.text
         assert ui_copy.PLAYBACK_PREVIEW not in page.text
         assert "Файл изменился" in page.text
@@ -924,6 +945,7 @@ def test_large_mp4_is_served_without_a_preview(
 def test_large_mov_uses_the_short_preview(tmp_path: Path) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     clip = _clip(tmp_path, "clip.mov", 0.4)
     added = add_video(tmp_path, "pilot", clip)
     with connect(project_sqlite(tmp_path, "pilot")) as connection:
@@ -932,7 +954,7 @@ def test_large_mov_uses_the_short_preview(tmp_path: Path) -> None:
             (video_page._DIRECT_PLAYBACK_MAX_BYTES + 1, added["video_id"]),
         )
     with _client(tmp_path) as client:
-        page = client.get("/")
+        page = client.get("/video")
         assert ui_copy.PLAYBACK_PREVIEW not in page.text
         assert ui_copy.PLAYBACK_FILE not in page.text
         src = _video_src(page.text)
@@ -953,6 +975,7 @@ def test_large_mov_uses_the_short_preview(tmp_path: Path) -> None:
 def test_symlink_and_dotdot_are_not_a_media_path(tmp_path: Path) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     clip = _clip(tmp_path)
     added = add_video(tmp_path, "pilot", clip)
     stored = Path(str(added["path"]))
@@ -992,6 +1015,7 @@ def test_escaped_non_mp4_is_not_opened_or_previewed(
     monkeypatch.setattr(video_page, "playback_path", wrapped)
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     added = add_video(tmp_path, "pilot", _clip(tmp_path, "clip.mov", 0.3))
     with connect(project_sqlite(tmp_path, "pilot")) as connection:
         connection.execute(
@@ -1007,7 +1031,7 @@ def test_escaped_non_mp4_is_not_opened_or_previewed(
     stored.symlink_to(secret)
     try:
         with _client(tmp_path) as client:
-            page = client.get("/")
+            page = client.get("/video")
             media = client.get(f"/media/pilot/{added['video_id']}")
         assert calls["n"] == 0
         assert page.status_code == 200
@@ -1031,6 +1055,7 @@ def test_escaped_non_mp4_is_not_opened_or_previewed(
 def test_short_preview_does_not_follow_an_escaped_media_symlink(tmp_path: Path) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     clip = tmp_path / "clip.mov"
     clip.write_bytes(b"inside-source")
     outside = tmp_path.parent / f"outside-media-{tmp_path.name}"
@@ -1063,6 +1088,7 @@ def test_short_preview_does_not_follow_an_escaped_media_symlink(tmp_path: Path) 
 def test_short_preview_does_not_follow_an_escaped_previews_symlink(tmp_path: Path) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     add_video(tmp_path, "pilot", _clip(tmp_path))
     record = list_videos(tmp_path, "pilot")[0]
     record["size_bytes"] = video_page._DIRECT_PLAYBACK_MAX_BYTES + 1
@@ -1087,6 +1113,7 @@ def test_short_preview_does_not_follow_an_escaped_previews_symlink(tmp_path: Pat
 def test_large_source_plays_a_short_encoder_preview(tmp_path: Path) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     clip = _clip(tmp_path)
     added = add_video(tmp_path, "pilot", clip)
     record = list_videos(tmp_path, "pilot")[0]
@@ -1105,6 +1132,7 @@ def test_large_source_plays_a_short_encoder_preview(tmp_path: Path) -> None:
 def test_bad_interval_does_not_enqueue(tmp_path: Path) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     added = add_video(tmp_path, "pilot", _clip(tmp_path))
     with _client(tmp_path) as client:
         response = client.post(
@@ -1120,10 +1148,11 @@ def test_bad_interval_does_not_enqueue(tmp_path: Path) -> None:
 def test_missing_weights_show_the_doctor_notice(tmp_path: Path) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     added = add_video(tmp_path, "pilot", _clip(tmp_path))
     assert not official_nano_weights_path(tmp_path).is_file()
     with _client(tmp_path) as client:
-        page = client.get("/")
+        page = client.get("/video")
         assert "Официальные веса" not in page.text
         assert "Official RF-DETR weights" not in page.text
         assert "локальный кэш" not in page.text
@@ -1170,6 +1199,7 @@ def test_running_job_disables_baseline_and_blocks_a_second_start(
     monkeypatch.setattr(video_page, "enqueue_analyze", wrapped)
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     added = add_video(tmp_path, "pilot", _clip(tmp_path))
     weights = official_nano_weights_path(tmp_path)
     weights.parent.mkdir(parents=True, exist_ok=True)
@@ -1185,13 +1215,13 @@ def test_running_job_disables_baseline_and_blocks_a_second_start(
     )
     try:
         with _client(tmp_path) as client:
-            page = client.get("/")
+            page = client.get("/video")
             assert page.status_code == 200
             buttons = dict(_submit_buttons(page.text))
             assert buttons[ui_copy.BASELINE_BUTTON] is True
             assert "выполняется" in page.text
             assert ui_copy.RUNS_NO_BOXES in page.text
-            again = client.get("/")
+            again = client.get("/video")
             assert dict(_submit_buttons(again.text))[ui_copy.BASELINE_BUTTON] is True
             posted = client.post(
                 "/video/baseline",
@@ -1229,6 +1259,7 @@ def test_baseline_enqueues_once_and_a_rerun_does_not_repeat(
     monkeypatch.setenv(FAKE_DETECTOR_ENV, "1")
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     added = add_video(tmp_path, "pilot", _clip(tmp_path))
     weights = official_nano_weights_path(tmp_path)
     weights.parent.mkdir(parents=True, exist_ok=True)
@@ -1252,7 +1283,7 @@ def test_baseline_enqueues_once_and_a_rerun_does_not_repeat(
             assert body["video_id"] == added["video_id"]
             assert body["start_s"] == 0.0
             assert body["end_s"] == 0.3
-            client.get("/")
+            client.get("/video")
             assert len(_requests(tmp_path, "pilot")) == 1
         assert weights.read_bytes() == b"cached-name-only"
         assert ui_copy.BASELINE_CAPTION in done.text
@@ -1327,6 +1358,7 @@ def test_interval_bounds_use_start_offset_and_preview_seeks_there(
     (tmp_path / "late.mp4").write_bytes(b"stub")
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     preview = video_page.playback_path(tmp_path, "pilot", record)  # type: ignore[arg-type]
     assert calls["iterate"] == (300.0, 302.0)
     assert calls["write"] == (300.0, 302.0)
@@ -1346,6 +1378,7 @@ def test_offset_widgets_default_to_the_source_window(
 ) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     late = {
         "video_id": "v_late",
         "name": "clip.mp4",
@@ -1359,7 +1392,7 @@ def test_offset_widgets_default_to_the_source_window(
     }
     monkeypatch.setattr(video_page.storage, "list_videos", lambda *_args: [late])
     with _client(tmp_path) as client:
-        page = client.get("/")
+        page = client.get("/video")
     assert page.status_code == 200
     assert _input_value(page.text, "start_s") == "300"
     assert _input_value(page.text, "end_s") == "310"
@@ -1370,7 +1403,7 @@ def test_offset_widgets_default_to_the_source_window(
     blank["start_offset_s"] = None
     monkeypatch.setattr(video_page.storage, "list_videos", lambda *_args: [blank])
     with _client(tmp_path) as client:
-        empty = client.get("/")
+        empty = client.get("/video")
     assert _input_value(empty.text, "start_s") is None
     assert _input_value(empty.text, "end_s") is None
     offset = re.search(rf"{re.escape(ui_copy.OFFSET_LABEL)}:[^<]*", empty.text)
@@ -1382,6 +1415,7 @@ def test_offset_widgets_default_to_the_source_window(
 def test_same_filename_selectbox_includes_video_id(tmp_path: Path) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     left = _clip(tmp_path, "left/clip.mp4", 0.2)
     right = _clip(tmp_path, "right/clip.mp4", 0.2)
     first = add_video(tmp_path, "pilot", left)
@@ -1392,7 +1426,7 @@ def test_same_filename_selectbox_includes_video_id(tmp_path: Path) -> None:
         {"name": "clip.mp4", "video_id": second["video_id"]}
     )
     with _client(tmp_path) as client:
-        page = client.get("/")
+        page = client.get("/video")
     options = _video_options(page.text)
     assert len(options) == 2
     labels = [label for _value, label, _on in options]
@@ -1400,16 +1434,39 @@ def test_same_filename_selectbox_includes_video_id(tmp_path: Path) -> None:
     assert any(second["video_id"] in item for item in labels)
 
 
+def test_video_query_selects_on_the_video_page_only(tmp_path: Path) -> None:
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
+    add_video(tmp_path, "pilot", _clip(tmp_path, "one.mp4", 0.2))
+    second = add_video(tmp_path, "pilot", _clip(tmp_path, "two.mp4", 0.2))
+    video_id = str(second["video_id"])
+    with _client(tmp_path) as client:
+        chosen = client.get("/video", params={"video": video_id})
+        home = client.get("/", params={"video": video_id})
+    assert chosen.status_code == 200
+    selected = [value for value, _label, on in _video_options(chosen.text) if on]
+    assert selected == [video_id]
+    assert _input_value(chosen.text, "video_id") == video_id
+    assert f"/media/pilot/{video_id}" in chosen.text
+    assert home.status_code == 200
+    assert "<video" not in home.text.lower()
+    assert f"/media/{video_id}" not in home.text
+    assert f"/media/pilot/{video_id}" not in home.text
+    assert 'action="/video/choose"' not in home.text
+
+
 def test_cached_weights_clear_a_stored_download_notice(tmp_path: Path) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     add_video(tmp_path, "pilot", _clip(tmp_path, "clip.mp4", 0.2))
     weights = official_nano_weights_path(tmp_path)
     weights.parent.mkdir(parents=True, exist_ok=True)
     weights.write_bytes(b"cached-name-only")
     write_flash(tmp_path, {"notice": "скачайте-заново-маркер"})
     with _client(tmp_path) as client:
-        page = client.get("/")
+        page = client.get("/video")
     assert "скачайте-заново-маркер" not in page.text
     assert "Официальные веса" not in page.text
 
@@ -1418,9 +1475,10 @@ def test_english_video_page_keeps_only_the_language_endonym(tmp_path: Path) -> N
     write_locale_file(tmp_path, "en")
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     book = ui_copy.catalog("en")
     with _client(tmp_path) as client:
-        empty = client.get("/")
+        empty = client.get("/video")
         labels = _button_labels(empty.text)
         assert book.choose_file_button in labels
         assert book.add_local_video in empty.text
@@ -1432,8 +1490,10 @@ def test_english_video_page_keeps_only_the_language_endonym(tmp_path: Path) -> N
         assert book.add_another not in empty.text
         assert "<summary>Дополнительно</summary>" not in empty.text
         assert "<summary>Advanced</summary>" not in empty.text
-        assert empty.text.count("<summary>") == 1
-        assert f"<summary>{book.create_project_heading}</summary>" in empty.text
+        assert empty.text.count("<summary>") == 0
+        assert 'id="project-create-panel"' not in empty.text
+        assert 'id="project-manager"' not in empty.text
+        assert 'id="lab-home"' in empty.text
         assert book.baseline_button not in labels
         assert _foreign_cyrillic(empty.text) == ""
         added = client.post(
@@ -1449,8 +1509,10 @@ def test_english_video_page_keeps_only_the_language_endonym(tmp_path: Path) -> N
     assert book.upload_label not in added.text
     assert book.add_another not in added.text
     assert "<summary>Advanced</summary>" not in added.text
-    assert added.text.count("<summary>") == 1
-    assert f"<summary>{book.create_project_heading}</summary>" in added.text
+    assert added.text.count("<summary>") == 0
+    assert 'id="project-create-panel"' not in added.text
+    assert 'id="project-manager"' not in added.text
+    assert 'id="lab-home"' in added.text
     assert 'class="lab-video"' in added.text
     assert "Официальные веса" not in added.text
     assert "Official RF-DETR weights" not in added.text

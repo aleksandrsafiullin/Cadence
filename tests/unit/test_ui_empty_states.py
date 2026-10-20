@@ -6,6 +6,7 @@ import ast
 import re
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlparse
 
 import pytest
 from starlette.testclient import TestClient
@@ -23,6 +24,7 @@ from excavation_lab.ui import (
 )
 from excavation_lab.ui import copy as ui_copy
 from excavation_lab.web.app import create_app
+from excavation_lab.web.preferences import write_project_file
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _PAGES = (
@@ -111,7 +113,7 @@ def test_page_modules_expose_render() -> None:
 
 
 _SHELL_PAGES = (
-    ("/", "video", ui_copy.PAGE_VIDEO),
+    ("/video", "video", ui_copy.PAGE_VIDEO),
     ("/data", "data", ui_copy.PAGE_DATA),
     ("/training", "training", ui_copy.PAGE_TRAINING),
     ("/analysis", "analysis", ui_copy.PAGE_ANALYSIS),
@@ -132,49 +134,26 @@ _EMPTY_ATTR = {
     ids=[item[1] for item in _SHELL_PAGES],
 )
 def test_empty_workspace_page(path: str, page_id: str, title: str, tmp_path: Path) -> None:
-    book = ui_copy.catalog("ru")
     with TestClient(create_app(tmp_path)) as client:
-        response = client.get(path)
-    assert response.status_code == 200
+        response = client.get(path, follow_redirects=False)
+    assert response.status_code == 303
+    assert urlparse(response.headers["location"]).path == "/"
+    assert page_id
+    assert title
     text = response.text
-    assert title in text
-    assert ui_copy.PAGE_DESCRIPTIONS[title] in text
-    assert ui_copy.PRODUCT_TITLE in text
-    assert ui_copy.PROJECT_LABEL in text
-    assert ui_copy.NO_PROJECT in text
-    if page_id != "video":
-        assert ui_copy.NOT_CALCULATED in text
-    empty_name = _EMPTY_ATTR.get(page_id)
-    if empty_name is not None:
-        assert getattr(book, empty_name) in text
-    assert _zero_token(text) is None, text
-    lowered = text.lower()
-    assert "<video" not in lowered
-    assert "<canvas" not in lowered
-    assert "lab-chart" not in lowered
-    assert "youtube" not in lowered
+    assert 'class="lab-workflow"' not in text
+    assert 'action="/video/choose"' not in text
+    assert "<video" not in text.lower()
     assert not (tmp_path / "ui" / "project.txt").exists()
-    if page_id == "video":
-        assert book.need_project in text
-        assert book.choose_file_button not in text
-        assert 'action="/video/choose"' not in text
-    if page_id == "events":
-        assert "недоступен" in text
-    if page_id == "data":
-        assert book.label_counts_this_video in text
-        assert book.label_counts_project in text
-        assert book.label_counts_snapshot in text
-        assert book.snapshot_gate_scope in text
-        assert book.not_calculated in text
-        assert f"{book.count_reviewed}: 0" not in text
 
 
 def test_quality_page_without_metrics_json_has_no_zero_chart(tmp_path: Path) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     book = ui_copy.catalog("ru")
     with TestClient(create_app(tmp_path)) as client:
-        response = client.get("/quality")
+        response = client.get("/quality", follow_redirects=False)
     assert response.status_code == 200
     text = response.text
     assert ui_copy.PAGE_QUALITY in text
@@ -182,7 +161,8 @@ def test_quality_page_without_metrics_json_has_no_zero_chart(tmp_path: Path) -> 
     assert ui_copy.PRODUCT_TITLE in text
     assert ui_copy.QUALITY_EMPTY in text
     assert ui_copy.NOT_CALCULATED in text
-    assert 'value="pilot"' in text
+    assert 'id="lab-home"' in text
+    assert '<p class="lab-label">pilot</p>' in text
     main = re.search(r"<main\b[^>]*>(.*)</main>", text, re.DOTALL)
     assert main is not None
     assert "<select" not in main.group(1)
@@ -219,8 +199,9 @@ def test_quality_page_without_metrics_json_has_no_zero_chart(tmp_path: Path) -> 
 def test_project_without_video_still_asks_for_a_local_path(tmp_path: Path) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     with TestClient(create_app(tmp_path)) as client:
-        response = client.get("/")
+        response = client.get("/video", follow_redirects=False)
     assert response.status_code == 200
     text = response.text
     assert ui_copy.PAGE_VIDEO in text
@@ -232,7 +213,8 @@ def test_project_without_video_still_asks_for_a_local_path(tmp_path: Path) -> No
     assert 'type="file"' not in text
     assert ui_copy.UPLOAD_LABEL not in text
     assert ui_copy.LOCAL_PATH_LABEL in text
-    assert 'value="pilot"' in text
+    assert 'id="lab-home"' in text
+    assert '<p class="lab-label">pilot</p>' in text
     assert "<video" not in text
     assert "<canvas" not in text
     visible = re.sub(r"<[^>]+>", " ", text)
@@ -292,12 +274,9 @@ def test_shell_does_not_call_auth_or_telemetry() -> None:
 
 def test_app_entrypoint_renders_video(tmp_path: Path) -> None:
     with TestClient(create_app(tmp_path)) as client:
-        response = client.get("/")
-    assert response.status_code == 200
-    text = response.text
-    assert ui_copy.PAGE_VIDEO in text
-    assert ui_copy.PAGE_DESCRIPTIONS[ui_copy.PAGE_VIDEO] in text
-    assert ui_copy.PRODUCT_TITLE in text
-    assert ui_copy.NO_PROJECT in text
-    visible = re.sub(r"<[^>]+>", " ", text)
-    assert _zero_token(visible) is None
+        response = client.get("/video", follow_redirects=False)
+    assert response.status_code == 303
+    assert urlparse(response.headers["location"]).path == "/"
+    assert 'action="/video/choose"' not in response.text
+    assert "<video" not in response.text.lower()
+    assert not (tmp_path / "ui" / "project.txt").exists()

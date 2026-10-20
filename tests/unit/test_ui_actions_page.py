@@ -16,6 +16,7 @@ from excavation_lab.ui import navigation
 from excavation_lab.ui.copy import action_seed_titles, catalog
 from excavation_lab.ui.locale import write_locale_file
 from excavation_lab.web.app import create_app
+from excavation_lab.web.preferences import write_project_file
 
 _PROJECT = "mvp"
 _VIDEO = "vid"
@@ -36,15 +37,15 @@ def test_navigation_docstring_says_seven_pages() -> None:
 def test_empty_page_without_project_or_video(tmp_path: Path) -> None:
     book = catalog("ru")
     with TestClient(create_app(tmp_path)) as client:
-        empty = client.get("/actions")
-        assert empty.status_code == 200
-        assert book.page_actions in empty.text
-        assert book.need_project in empty.text
-        assert book.action_block_help in empty.text
-        assert "<video" not in empty.text
-        assert 'id="action-track"' not in empty.text
-        list_catalogs(tmp_path)
-        storage.create_project(_PROJECT, tmp_path, catalog_id="excavation")
+        empty = client.get("/actions", follow_redirects=False)
+    assert empty.status_code == 303
+    assert empty.headers["location"].endswith("/")
+    assert 'id="action-track"' not in empty.text
+    assert not (tmp_path / "ui" / "project.txt").exists()
+    list_catalogs(tmp_path)
+    storage.create_project(_PROJECT, tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, _PROJECT)
+    with TestClient(create_app(tmp_path)) as client:
         bare = client.get("/actions")
     assert bare.status_code == 200
     assert book.action_no_video in bare.text
@@ -220,6 +221,7 @@ def _project(tmp_path: Path) -> Path:
     workspace = tmp_path / "workspace"
     list_catalogs(workspace)
     storage.create_project(_PROJECT, workspace, catalog_id="excavation")
+    write_project_file(workspace, _PROJECT)
     storage.insert_video(workspace, _PROJECT, _VIDEO, name="clip.mp4")
     return workspace
 

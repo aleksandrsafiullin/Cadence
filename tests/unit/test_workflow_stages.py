@@ -48,7 +48,7 @@ def test_missing_project_waits_on_every_stage() -> None:
     assert [stage.state for stage in stages] == ["waiting"] * 5
     assert {stage.caption for stage in stages} == {book.need_project}
     assert [stage.path for stage in stages] == [
-        "/",
+        "/video",
         "/data",
         "/training",
         "/analysis",

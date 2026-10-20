@@ -23,6 +23,7 @@ from excavation_lab.ui import training_page
 from excavation_lab.ui.charts import loss_chart
 from excavation_lab.ui.video_page import job_status_line
 from excavation_lab.web.app import create_app
+from excavation_lab.web.preferences import write_project_file
 
 _TWO = (
     "epoch,train_loss,epoch_duration_s\n"
@@ -203,6 +204,7 @@ def test_running_job_disables_the_start_button(
 ) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     monkeypatch.setattr(
         training_page,
         "reopen",
@@ -226,6 +228,7 @@ def test_running_job_disables_the_start_button(
 def test_profile_defaults_fill_advanced_fields(tmp_path: Path) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     book = ui_copy.catalog("ru")
     with TestClient(create_app(tmp_path)) as client:
         page = client.get("/training")
@@ -272,6 +275,7 @@ def test_not_ready_dataset_does_not_enqueue_twice(
 ) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     snapshot = tmp_path / "snapshot"
     snapshot.mkdir()
     _insert_dataset(tmp_path, "snapshot", snapshot)
@@ -307,6 +311,7 @@ def test_start_without_a_dataset_does_not_enqueue(
 ) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     calls = {"n": 0}
 
     def fail(*_args: object, **_kwargs: object) -> None:
@@ -334,6 +339,7 @@ def test_post_during_an_active_job_does_not_enqueue(
 ) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     pid = os.getpid() if status == "running" else None
     _insert_job(tmp_path, "activejob01", status=status, pid=pid)
     calls = {"n": 0}
@@ -360,6 +366,7 @@ def test_variant_mismatch_post_does_not_enqueue(
 ) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     snapshot = tmp_path / "snapshot"
     snapshot.mkdir()
     _insert_dataset(tmp_path, "snapshot", snapshot)
@@ -382,6 +389,7 @@ def test_overfit_is_not_on_the_form(
 ) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     calls = {"n": 0}
 
     def fail(*_args: object, **_kwargs: object) -> None:
@@ -404,6 +412,7 @@ def test_cancel_uses_the_active_job_and_ignores_another_pid(
 ) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     job_id = "activejob01"
     _insert_job(tmp_path, job_id, status="queued")
     seen: list[str] = []
@@ -444,6 +453,7 @@ def test_cancel_uses_the_active_job_and_ignores_another_pid(
 def test_two_measured_epochs_on_the_page_have_no_eta(tmp_path: Path) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     job_id = "epochjob01"
     run_dir = _insert_job(tmp_path, job_id, status="completed")
     (run_dir / "train_request.json").write_text(
@@ -469,6 +479,7 @@ def test_two_measured_epochs_on_the_page_have_no_eta(tmp_path: Path) -> None:
 def test_header_only_log_on_the_page_is_not_a_curve(tmp_path: Path) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     job_id = "headerjob1"
     run_dir = _insert_job(tmp_path, job_id, status="completed")
     (run_dir / "train_request.json").write_text(
@@ -560,6 +571,7 @@ def test_progress_payload_includes_orphaned_and_the_status_line(tmp_path: Path) 
 def test_poll_uses_a_relative_progress_url(tmp_path: Path) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     job_id = "queuedjob01"
     _insert_job(tmp_path, job_id, status="queued")
     script = (

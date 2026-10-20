@@ -34,7 +34,7 @@ from excavation_lab.ui.data_page import (
 from excavation_lab.ui.training_page import format_error, missing_snapshot_message
 
 _STAGE_SPEC = (
-    ("video", "page_video", "/"),
+    ("video", "page_video", "/video"),
     ("data", "page_data", "/data"),
     ("training", "page_training", "/training"),
     ("analysis", "page_analysis", "/analysis"),

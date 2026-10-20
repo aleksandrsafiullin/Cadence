@@ -24,6 +24,7 @@ from excavation_lab.ui import label_page
 from excavation_lab.ui.copy import catalog
 from excavation_lab.ui.locale import write_locale_file
 from excavation_lab.web.app import create_app
+from excavation_lab.web.preferences import write_project_file
 
 _PROJECT = "pilot"
 _VIDEO = "vid"
@@ -520,6 +521,7 @@ def test_unfrozen_video_is_refused(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     list_catalogs(workspace)
     storage.create_project(_PROJECT, workspace, catalog_id="excavation")
+    write_project_file(workspace, _PROJECT)
     clip = workspace / "clip.mp4"
     clip.write_bytes(b"synthetic-not-a-video")
     storage.insert_video(workspace, _PROJECT, _VIDEO, path=clip, name="clip.mp4")
@@ -534,6 +536,7 @@ def _lab(tmp_path: Path) -> Path:
     workspace = tmp_path / "workspace"
     list_catalogs(workspace)
     storage.create_project(_PROJECT, workspace, catalog_id="excavation")
+    write_project_file(workspace, _PROJECT)
     clip = workspace / "clip.mp4"
     clip.write_bytes(b"synthetic-not-a-video")
     storage.insert_video(workspace, _PROJECT, _VIDEO, path=clip, name="clip.mp4")

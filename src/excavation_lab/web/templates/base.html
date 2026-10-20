@@ -9,41 +9,25 @@
 </head>
 <body>
   <a class="lab-skip" href="#content">{{ skip_label | default('К содержанию') }}</a>
-  <div class="lab-app">
+  <div class="lab-app{% block app_class %}{% endblock %}">
     <aside class="lab-sidebar">
       {% block sidebar %}
       <p class="lab-section">{{ product_title }}</p>
-      <p class="lab-kicker">{{ kicker_project }}</p>
-      <form method="post" action="/project">
-        <input type="hidden" name="next" value="{{ current_path | default('/') }}">
-        <label class="lab-label" for="lab-project">{{ project_label }}</label>
-        <select class="lab-select" id="lab-project" name="project"{% if not projects %} disabled title="{{ no_project }}"{% endif %}>
-          {% if not projects %}
-          <option disabled selected>{{ no_project }}</option>
-          {% else %}
-          {% for item in projects %}
-          <option value="{{ item.project_id }}"{% if item.project_id == project_id %} selected{% endif %}>{{ item.name }}</option>
-          {% endfor %}
-          {% endif %}
-        </select>
-        {% if projects %}
-        <button type="submit" class="lab-btn">{{ project_label }}</button>
-        {% endif %}
-        {% if project_help %}
-        <p class="lab-caption">{{ project_help }}</p>
-        {% endif %}
-        {% if project_error %}
-        <p class="lab-alert" role="alert">{{ project_error }}</p>
-        {% endif %}
-      </form>
+      <a class="lab-icon-btn" id="lab-home" href="/" aria-label="{{ back_to_projects }}" title="{{ back_to_projects }}">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.4 7.1 8 2.6l5.6 4.5V13a.7.7 0 0 1-.7.7H10V9.2H6V13.7H3.1a.7.7 0 0 1-.7-.7V7.1Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+      </a>
+      {% if project_name %}
+      <p class="lab-label">{{ project_name }}</p>
+      {% endif %}
       <p class="lab-kicker">{{ kicker_workflow }}</p>
       <nav class="lab-nav" aria-label="{{ kicker_workflow }}">
         {% for link in nav_links | default([]) %}
         <a class="lab-nav-btn" href="{{ link.path }}"{% if link.current %} aria-current="page"{% endif %}>{{ link.title }}</a>
         {% endfor %}
       </nav>
+      {% if stages %}
       <ol class="lab-workflow">
-        {% for stage in stages | default([]) %}
+        {% for stage in stages %}
         <li data-workflow="{{ stage.state }}"{% if stage.here %} aria-current="page"{% endif %}>
           <a href="{{ stage.path }}">{{ stage.title }}</a>
           <span class="lab-step-status">{{ stage.status }}</span>
@@ -51,36 +35,36 @@
         </li>
         {% endfor %}
       </ol>
-      <p class="lab-kicker">{{ kicker_appearance }}</p>
-      <form method="post" action="/theme">
-        <input type="hidden" name="next" value="{{ current_path | default('/') }}">
-        <div class="lab-segmented" role="group" aria-label="{{ theme_label }}">
-          <button type="submit" class="lab-btn" name="theme" value="light" aria-pressed="{{ 'true' if theme == 'light' else 'false' }}">{{ theme_light }}</button>
-          <button type="submit" class="lab-btn" name="theme" value="dark" aria-pressed="{{ 'true' if theme == 'dark' else 'false' }}">{{ theme_dark }}</button>
-        </div>
-        {% if theme_display_only %}
-        <p class="lab-caption">{{ theme_display_only }}</p>
-        {% endif %}
-      </form>
-      <form method="post" action="/locale">
-        <input type="hidden" name="next" value="{{ current_path | default('/') }}">
-        <div class="lab-segmented" role="group" aria-label="{{ locale_label }}">
-          <button type="submit" class="lab-btn" name="locale" value="ru" aria-pressed="{{ 'true' if lang == 'ru' else 'false' }}">{{ language_russian }}</button>
-          <button type="submit" class="lab-btn" name="locale" value="en" aria-pressed="{{ 'true' if lang == 'en' else 'false' }}">{{ language_english }}</button>
-        </div>
-        {% if locale_caption %}
-        <p class="lab-caption">{{ locale_caption }}</p>
-        {% endif %}
-      </form>
+      {% endif %}
       {% if notice %}
       <p class="lab-alert" role="alert">{{ notice }}</p>
       {% endif %}
       {% endblock %}
     </aside>
     <main class="lab-main" id="content">
+      {% block toolbar %}
+      <div class="lab-home-tools">
+        <form method="post" action="/theme">
+          <input type="hidden" name="next" value="{{ current_path | default('/') }}">
+          <div class="lab-segmented" role="group" aria-label="{{ theme_label }}">
+            <button type="submit" class="lab-btn" name="theme" value="light" aria-pressed="{{ 'true' if theme == 'light' else 'false' }}">{{ theme_light }}</button>
+            <button type="submit" class="lab-btn" name="theme" value="dark" aria-pressed="{{ 'true' if theme == 'dark' else 'false' }}">{{ theme_dark }}</button>
+          </div>
+        </form>
+        <form method="post" action="/locale">
+          <input type="hidden" name="next" value="{{ current_path | default('/') }}">
+          <div class="lab-segmented" role="group" aria-label="{{ locale_label }}">
+            <button type="submit" class="lab-btn" name="locale" value="ru" aria-pressed="{{ 'true' if lang == 'ru' else 'false' }}">{{ language_russian }}</button>
+            <button type="submit" class="lab-btn" name="locale" value="en" aria-pressed="{{ 'true' if lang == 'en' else 'false' }}">{{ language_english }}</button>
+          </div>
+        </form>
+      </div>
+      <p class="lab-sr">{{ theme_display_only }}</p>
+      <p class="lab-sr">{{ locale_caption }}</p>
+      {% endblock %}
       {% block main %}{% endblock %}
     </main>
   </div>
-  <script src="/static/project_catalog.js"></script>
+  {% block scripts %}{% endblock %}
 </body>
 </html>

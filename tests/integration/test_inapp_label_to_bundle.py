@@ -41,6 +41,7 @@ from excavation_lab.ui import copy as ui_copy
 from excavation_lab.ui import training_page
 from excavation_lab.ui.analysis_page import list_bundles
 from excavation_lab.web.app import create_app
+from excavation_lab.web.preferences import write_project_file
 
 _SYNTHETIC_PATH = Path(__file__).resolve().parents[1] / "fixtures" / "synthetic.py"
 _SPEC = importlib.util.spec_from_file_location(
@@ -306,6 +307,7 @@ def _labelled_snapshot(tmp_path: Path) -> tuple[Path, str, Path, list[str]]:
     workspace = tmp_path / "workspace"
     list_catalogs(workspace)
     storage.create_project("pilot", workspace, catalog_id="excavation")
+    write_project_file(workspace, "pilot")
     clip = workspace / "clip.mp4"
     write_synthetic_mp4(clip, 36, 5)
     video = add_video(workspace, "pilot", clip, video_id="vid")

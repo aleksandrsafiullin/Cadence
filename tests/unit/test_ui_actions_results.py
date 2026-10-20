@@ -20,6 +20,7 @@ from excavation_lab.errors import LabError
 from excavation_lab.jobs import lab_database, request_cancel, start_job
 from excavation_lab.ui.copy import action_seed_titles, catalog
 from excavation_lab.web.app import create_app
+from excavation_lab.web.preferences import write_project_file
 
 _PROJECT = "mvp"
 _VIDEO = "vid"
@@ -483,6 +484,7 @@ def _project(tmp_path: Path) -> Path:
     workspace = tmp_path / "workspace"
     list_catalogs(workspace)
     storage.create_project(_PROJECT, workspace, catalog_id="excavation")
+    write_project_file(workspace, _PROJECT)
     storage.insert_video(workspace, _PROJECT, _VIDEO, name="clip.mp4")
     return workspace
 

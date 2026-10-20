@@ -161,6 +161,13 @@ def test_events_page_renders_unavailable_without_the_chart_styler(tmp_path: Path
     assert "excavation_lab.ui.charts" not in modules
     for name in _CHART_CALLS:
         assert name not in calls
+    from excavation_lab.datasets.catalog import list_catalogs
+    from excavation_lab.storage import create_project
+    from excavation_lab.web.preferences import write_project_file
+
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     with TestClient(create_app(tmp_path)) as client:
         page = client.get("/events")
     assert page.status_code == 200
@@ -180,6 +187,13 @@ def test_stylesheet_skip_does_not_skip_the_metric_zero(tmp_path: Path) -> None:
         REPO_ROOT / "src" / "excavation_lab" / "web" / "static" / "lab.css"
     ).read_text(encoding="utf-8")
     assert "margin: 0" in css
+    from excavation_lab.datasets.catalog import list_catalogs
+    from excavation_lab.storage import create_project
+    from excavation_lab.web.preferences import write_project_file
+
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     with TestClient(create_app(tmp_path)) as client:
         page = client.get("/events")
     assert page.status_code == 200

@@ -12,7 +12,9 @@ from urllib.parse import urlparse
 import pytest
 from starlette.testclient import TestClient
 
+from excavation_lab.datasets.catalog import list_catalogs
 from excavation_lab.errors import PathNotAllowedError
+from excavation_lab.storage import create_project
 from excavation_lab.ui import copy as ui_copy
 from excavation_lab.ui import theme as theme_mod
 from excavation_lab.ui import tokens
@@ -25,6 +27,7 @@ from excavation_lab.ui.theme import (
 )
 from excavation_lab.ui.tokens import combined_css, theme_custom_properties
 from excavation_lab.web.app import create_app
+from excavation_lab.web.preferences import write_project_file
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _REPO_THEME = REPO_ROOT / "workspace" / "ui" / "theme.txt"
@@ -349,33 +352,37 @@ def test_ui_sources_have_no_url_scheme() -> None:
 def test_switch_defaults_dark_and_persists_light(tmp_path: Path) -> None:
     workspace = tmp_path / "ws"
     workspace.mkdir()
+    list_catalogs(workspace)
+    create_project("pilot", workspace, catalog_id="excavation")
+    write_project_file(workspace, "pilot")
     preference = workspace / "ui" / "theme.txt"
     with TestClient(create_app(workspace)) as client:
-        first = client.get("/")
+        first = client.get("/video")
         assert first.status_code == 200
+        assert _location_path(str(first.url)) == "/video"
         _assert_theme_control(first.text, "dark")
         assert ui_copy.THEME_LABEL in first.text
         assert first.text.count(ui_copy.THEME_LABEL) == 1
         assert ui_copy.THEME_DISPLAY_ONLY in first.text
-        assert re.findall(r"<script\b[^>]*>", first.text, flags=re.IGNORECASE) == [
-            '<script src="/static/project_catalog.js">',
-        ]
+        assert re.findall(r"<script\b[^>]*>", first.text, flags=re.IGNORECASE) == []
+        assert "<script>" not in first.text
         assert not preference.exists()
         assert 'name="theme"' in first.text
 
         switched = client.post(
             "/theme",
-            data={"theme": "light", "next": "/"},
+            data={"theme": "light", "next": "/video"},
             follow_redirects=True,
         )
         assert switched.status_code == 200
         assert switched.history[0].status_code == 303
-        assert _location_path(switched.history[0].headers["location"]) == "/"
+        assert _location_path(switched.history[0].headers["location"]) == "/video"
+        assert _location_path(str(switched.url)) == "/video"
         assert preference.read_text(encoding="utf-8").strip() == "light"
         _assert_theme_control(switched.text, "light")
         assert 'data-theme="light"' in switched.text
 
-        fresh = client.get("/")
+        fresh = client.get("/video")
         assert fresh.status_code == 200
         _assert_theme_control(fresh.text, "light")
         assert preference.read_text(encoding="utf-8").strip() == "light"
@@ -388,10 +395,12 @@ def test_switch_defaults_dark_and_persists_light(tmp_path: Path) -> None:
         assert darkened.status_code == 200
         assert darkened.history[0].headers["location"]
         assert _location_path(darkened.history[0].headers["location"]) == "/events"
+        assert _location_path(str(darkened.url)) == "/events"
         assert preference.read_text(encoding="utf-8").strip() == "dark"
         _assert_theme_control(darkened.text, "dark")
         events = client.get("/events")
         assert events.status_code == 200
+        assert _location_path(str(events.url)) == "/events"
         _assert_theme_control(events.text, "dark")
         assert preference.read_text(encoding="utf-8").strip() == "dark"
 

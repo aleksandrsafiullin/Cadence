@@ -45,6 +45,7 @@ from excavation_lab.ui import copy as ui_copy
 from excavation_lab.ui import data_page
 from excavation_lab.ui.locale import write_locale_file
 from excavation_lab.web.app import create_app
+from excavation_lab.web.preferences import write_project_file
 from excavation_lab.web.uploads import UPLOAD_CAP
 
 _SYNTHETIC_PATH = Path(__file__).resolve().parents[1] / "fixtures" / "synthetic.py"
@@ -188,6 +189,7 @@ def _raw(
 def _pilot(tmp_path: Path) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
 
 
 def _video(tmp_path: Path, video_id: str = "clip") -> None:
@@ -427,17 +429,12 @@ def test_closed_snapshot_does_not_call_snapshot_dataset(
 
 def test_no_project_shows_unknown_counts_and_a_locked_snapshot(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
-        page = client.get("/data")
-    assert page.status_code == 200
-    text = page.text
-    assert ui_copy.DATA_EMPTY in text
-    assert data_page.review_count_text(None) in text
-    attrs = _button_attrs(text, ui_copy.SNAPSHOT_DATASET)
-    assert "disabled" in attrs
-    assert ui_copy.SNAPSHOT_LOCKED in attrs
-    assert _ZERO_TOKEN.search(text) is None
-    assert 'aria-current="step"' not in text
-    assert "<img" not in text.lower()
+        page = client.get("/data", follow_redirects=False)
+    assert page.status_code == 303
+    assert urlparse(page.headers["location"]).path == "/"
+    assert ui_copy.DATA_EMPTY not in page.text
+    assert 'class="lab-workflow"' not in page.text
+    assert not (tmp_path / "ui" / "project.txt").exists()
 
 
 def test_no_video_shows_unknown_counts_and_a_locked_snapshot(tmp_path: Path) -> None:
@@ -629,7 +626,9 @@ def test_haul_episode_file_stays_on_disk_and_is_not_called_damaged(tmp_path: Pat
     assert book.proposal_broken not in text
     assert book.proposal_missing not in text
     assert "Защитные интервалы" not in text
-    assert 'id="project-create"' not in text
+    assert 'id="project-create"' not in text.split("<main", 1)[1].split("</main>", 1)[0]
+    assert 'id="project-manager"' not in text
+    assert 'id="lab-home"' in text
     assert path.read_text(encoding="utf-8") == raw
 
 
@@ -2146,6 +2145,7 @@ def test_other_catalog_does_not_list_the_excavator_classes(tmp_path: Path) -> No
         (("loader", "Погрузчик", "Видимый погрузчик."),),
     )
     create_project("east", tmp_path, catalog_id="pit_tools")
+    write_project_file(tmp_path, "east")
     insert_video(tmp_path, "east", "clip", name="clip.mp4")
     with _client(tmp_path) as client:
         page = client.get("/data")

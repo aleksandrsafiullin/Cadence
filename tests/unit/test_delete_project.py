@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -110,6 +111,138 @@ def test_delete_refuses_a_symlink_outside_projects(tmp_path: Path) -> None:
     assert (outside / "keep.txt").read_text(encoding="utf-8") == "stay"
     assert link.is_symlink()
     assert (workspace / "catalogs" / "excavation" / "catalog.yaml").is_file()
+
+
+def test_delete_refuses_a_queued_or_running_lock_for_that_project(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    _project(workspace, "one")
+    _project(workspace, "two")
+    database = workspace / "lab.sqlite"
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute(
+            """
+            CREATE TABLE workspace_lock (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                job_id TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                status TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO workspace_lock (singleton, job_id, project_id, status)
+            VALUES (1, 'job-1', 'two', 'running')
+            """
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    storage.delete_project("one", workspace)
+    assert not (workspace / "projects" / "one").exists()
+
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute(
+            "UPDATE workspace_lock SET project_id = 'two', status = 'queued'"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    with pytest.raises(LabError) as queued:
+        storage.delete_project("two", workspace)
+    assert queued.value.code == "project_job_active"
+    assert "«two»" in queued.value.message
+    assert "в очереди" in queued.value.message
+    assert (workspace / "projects" / "two").is_dir()
+
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute("UPDATE workspace_lock SET status = 'running'")
+        connection.commit()
+    finally:
+        connection.close()
+    with pytest.raises(LabError) as running:
+        storage.delete_project("two", workspace)
+    assert running.value.code == "project_job_active"
+    assert "выполняется" in running.value.message
+    assert (workspace / "projects" / "two").is_dir()
+    connection = sqlite3.connect(database)
+    try:
+        row = connection.execute(
+            "SELECT project_id, status FROM workspace_lock"
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row == ("two", "running")
+
+
+def test_delete_refuses_while_cancel_is_requested(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    record = _project(workspace, "one")
+    directory = Path(record["project_dir"])
+    database = workspace / "lab.sqlite"
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute(
+            """
+            CREATE TABLE workspace_lock (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                job_id TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                status TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO workspace_lock (singleton, job_id, project_id, status)
+            VALUES (1, 'job-1', 'one', 'cancel_requested')
+            """
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    with pytest.raises(LabError) as caught:
+        storage.delete_project("one", workspace)
+    assert caught.value.code == "project_job_active"
+    assert caught.value.message == "Проект «one» нельзя удалить: задание отменяется."
+    assert directory.is_dir()
+    connection = sqlite3.connect(database)
+    try:
+        row = connection.execute(
+            "SELECT project_id, status FROM workspace_lock"
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row == ("one", "cancel_requested")
+
+
+def test_delete_refuses_when_lab_sqlite_is_a_symlink(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    record = _project(workspace, "one")
+    directory = Path(record["project_dir"])
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    decoy = outside / "lab.sqlite"
+    connection = sqlite3.connect(decoy)
+    try:
+        connection.execute("CREATE TABLE unused (id INTEGER)")
+        connection.commit()
+    finally:
+        connection.close()
+    link = workspace / "lab.sqlite"
+    link.symlink_to(decoy)
+    with pytest.raises(LabError) as caught:
+        storage.delete_project("one", workspace)
+    assert caught.value.code == "project_job_active"
+    assert "символическая ссылка" in caught.value.message
+    assert directory.is_dir()
+    assert link.is_symlink()
+    assert decoy.is_file()
 
 
 def test_delete_refuses_when_projects_itself_is_a_symlink(tmp_path: Path) -> None:

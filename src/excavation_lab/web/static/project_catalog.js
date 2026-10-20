@@ -31,4 +31,26 @@
     mode.addEventListener("change", sync);
   });
   sync();
+
+  var error = document.getElementById("project-home-error");
+  if (error && typeof error.scrollIntoView === "function") {
+    error.scrollIntoView({ block: "center" });
+  }
+})();
+
+(function () {
+  document.querySelectorAll("[data-dialog]").forEach(function (button) {
+    button.addEventListener("click", function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      var dialog = document.getElementById(button.getAttribute("data-dialog"));
+      if (dialog && typeof dialog.showModal === "function" && !dialog.open) {
+        dialog.showModal();
+      }
+    });
+  });
+  var createDialog = document.getElementById("project-create-dialog");
+  if (createDialog && createDialog.hasAttribute("data-open") && typeof createDialog.showModal === "function") {
+    createDialog.showModal();
+  }
 })();

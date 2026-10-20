@@ -35,16 +35,15 @@ def choose_project_id(
     workspace: Path,
     projects: Sequence[Mapping[str, str]],
 ) -> str | None:
-    """Stored id when it is listed, otherwise the only project.
+    """Stored id when that id is in the project list.
 
-    Several projects and an empty file stay unselected. This does not write.
+    An empty file, a missing file, and a stored id that is not listed all
+    return ``None``. This does not write.
     """
     stored = read_project_file(workspace)
     ids = [item["project_id"] for item in projects]
     if stored in ids:
         return stored
-    if len(ids) == 1:
-        return ids[0]
     return None
 
 
@@ -63,6 +62,22 @@ def read_project_file(workspace: Path) -> str | None:
     if "/" in value or "\\" in value:
         return None
     return value
+
+
+def clear_project_file(workspace: Path) -> None:
+    """Remove ``project.txt`` when it stays inside the workspace.
+
+    A missing file returns. A symlink that leaves the workspace is refused
+    and is not followed. ``read_project_file`` then returns ``None``.
+    """
+    root = Path(workspace).resolve()
+    path = root / "ui" / _PROJECT_FILE
+    if not path.exists() and not path.is_symlink():
+        return
+    resolved = path.resolve()
+    if not resolved.is_relative_to(root):
+        raise PathNotAllowedError(str(resolved))
+    path.unlink()
 
 
 def write_project_file(workspace: Path, project_id: str) -> None:

@@ -14,6 +14,7 @@ from starlette.testclient import TestClient
 
 from excavation_lab.datasets.catalog import list_catalogs, read_catalog
 from excavation_lab.errors import PathNotAllowedError
+from excavation_lab.jobs import lab_database
 from excavation_lab.storage import create_project
 from excavation_lab.ui.copy import catalog
 from excavation_lab.ui.locale import read_locale_file, write_locale_file
@@ -28,9 +29,9 @@ from excavation_lab.web.preferences import (
     write_flash,
     write_project_file,
 )
-from excavation_lab.web.shell import page_shell
+from excavation_lab.web.shell import RETURN_PATHS, page_shell
 
-_PATHS = ("/", "/data", "/training", "/analysis", "/quality", "/actions", "/events")
+_PATHS = ("/video", "/data", "/training", "/analysis", "/quality", "/actions", "/events")
 _HEX_COLOR = re.compile(r"#[0-9A-Fa-f]{3,8}\b")
 _WEB = Path(__file__).resolve().parents[2] / "src" / "excavation_lab" / "web"
 _SHELL_KEYS = {
@@ -46,6 +47,7 @@ _SHELL_KEYS = {
     "no_project",
     "projects",
     "project_id",
+    "project_name",
     "project_error",
     "nav_links",
     "stages",
@@ -83,12 +85,20 @@ _SHELL_KEYS = {
     "class_title_column",
     "class_box_column",
     "catalog_classes_heading",
+    "rename_project_label",
+    "rename_project_button",
+    "delete_project_button",
+    "delete_project_confirm",
+    "back_to_projects",
 }
 
 
 def test_sidebar_marks_one_current_link(tmp_path: Path) -> None:
     book = catalog("ru")
     titles = book.page_titles
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     with TestClient(create_app(tmp_path)) as client:
         for path, title in zip(_PATHS, titles, strict=True):
             response = client.get(path)
@@ -115,15 +125,21 @@ def test_page_shell_keeps_context_keys_and_label_is_not_a_nav_entry(tmp_path: Pa
     assert set(label_shell) == _SHELL_KEYS
     assert label_shell["page_title"] == book.label_page_title
     assert label_shell["current_path"] == "/label"
+    assert {"/", "/label", "/video"} <= RETURN_PATHS
+    video_shell = page_shell(_request(application, "/video"), "video", {})
+    assert video_shell["current_path"] == "/video"
     assert label_shell["notice"] == "сбой"
     paths = [item["path"] for item in label_shell["nav_links"]]  # type: ignore[index]
     assert paths == [path for _page_id, path, _attr in PAGE_ROUTES]
     assert "/label" not in paths
     current = [item["path"] for item in label_shell["nav_links"] if item["current"]]  # type: ignore[index]
     assert current == ["/data"]
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     with TestClient(application) as client:
-        page = client.get("/label?video=clip-1")
-        assert page.status_code == 200
+        page = client.get("/label?video=clip-1", follow_redirects=False)
+        assert page.status_code == 404
         assert page.cookies.get("lab_video") == "clip-1"
         links = _nav(page.text)
         assert [href for href, _title, _active in links] == list(_PATHS)
@@ -134,7 +150,7 @@ def test_page_shell_keeps_context_keys_and_label_is_not_a_nav_entry(tmp_path: Pa
         assert 'href="/data?video=clip-1#step-label"' in page.text
         main = page.text.split("<main", 1)[1]
         assert book.label_loading in main
-        refused = client.get("/label?video=a%3Bb")
+        refused = client.get("/label?video=a%3Bb", follow_redirects=False)
         assert "lab_video" not in refused.headers.get("set-cookie", "")
         write_locale_file(tmp_path, "en")
         english_page = client.get("/label")
@@ -148,23 +164,27 @@ def test_page_shell_keeps_context_keys_and_label_is_not_a_nav_entry(tmp_path: Pa
 def test_stepper_markup_on_video_data_and_actions(tmp_path: Path) -> None:
     book = catalog("ru")
     english = catalog("en")
-    hrefs = ("/", "/data", "/training", "/analysis", "/actions")
+    hrefs = ("/video", "/data", "/training", "/analysis", "/actions")
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     with TestClient(create_app(tmp_path)) as client:
-        for path in ("/", "/data", "/actions"):
-            page = client.get(path)
+        for path in ("/video", "/data", "/actions"):
+            page = client.get(path, follow_redirects=False)
             assert page.status_code == 200
             block = _workflow(page.text)
-            assert block.count('data-workflow="waiting"') == 5
-            assert 'data-workflow="current"' not in block
+            assert block.count('data-workflow="waiting"') == 4
+            assert block.count('data-workflow="current"') == 1
             assert 'data-workflow="done"' not in block
-            assert book.need_project in block
+            assert book.add_local_video in block
+            assert book.need_project not in block
             assert 'href="/events"' not in block
             for href in hrefs:
                 assert f'href="{href}"' in block
         write_locale_file(tmp_path, "en")
-        english_page = client.get("/")
+        english_page = client.get("/video", follow_redirects=False)
     block = _workflow(english_page.text)
-    assert english.need_project in block
+    assert english.add_local_video in block
     assert book.need_project not in block
     assert 'lang="en"' in english_page.text
 
@@ -175,15 +195,16 @@ def test_stepper_highlights_the_open_page(tmp_path: Path) -> None:
 
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     with TestClient(create_app(tmp_path)) as client:
-        home = _workflow(client.get("/").text)
+        video = _workflow(client.get("/video", follow_redirects=False).text)
         data = _workflow(client.get("/data").text)
         actions = _workflow(client.get("/actions").text)
         quality = _workflow(client.get("/quality").text)
         events = _workflow(client.get("/events").text)
         label = _workflow(client.get("/label").text)
-    assert home.count('data-workflow="current"') == 1
-    assert 'aria-current="page"' in _stage_item(home, "/")
+    assert video.count('data-workflow="current"') == 1
+    assert 'aria-current="page"' in _stage_item(video, "/video")
     assert 'aria-current="page"' in _stage_item(data, "/data")
     assert 'aria-current="page"' in _stage_item(actions, "/actions")
     assert 'aria-current="page"' in _stage_item(label, "/data")
@@ -200,10 +221,13 @@ def test_reads_do_not_create_preference_files(tmp_path: Path) -> None:
     assert read_flash(workspace) is None
     assert not (workspace / "ui").exists()
     with TestClient(create_app(workspace)) as client:
-        response = client.get("/quality")
-    assert response.status_code == 200
-    assert 'data-theme="dark"' in response.text
-    assert 'lang="ru"' in response.text
+        response = client.get("/quality", follow_redirects=False)
+        home = client.get("/", follow_redirects=False)
+    assert response.status_code == 303
+    assert _path(response.headers["location"]) == "/"
+    assert home.status_code == 200
+    assert 'data-theme="dark"' in home.text
+    assert 'lang="ru"' in home.text
     assert not (workspace / "ui").exists()
 
 
@@ -211,9 +235,8 @@ def test_project_picker_writes_a_listed_id_and_ignores_the_rest(tmp_path: Path) 
     book = catalog("ru")
     with TestClient(create_app(tmp_path)) as client:
         empty = client.get("/")
-        assert book.no_project in empty.text
-        select = _select(empty.text)
-        assert "disabled" in select[0]
+        assert book.home_empty in empty.text
+        assert 'id="project-create"' in empty.text
         ignored = client.post(
             "/project",
             data={"project": "pilot", "next": "/"},
@@ -226,26 +249,50 @@ def test_project_picker_writes_a_listed_id_and_ignores_the_rest(tmp_path: Path) 
         create_project("pilot", tmp_path, catalog_id="excavation")
         list_catalogs(tmp_path)
         create_project("west", tmp_path, catalog_id="excavation")
-        listed = client.get("/data")
-        options = _options(listed.text)
-        assert options == [("pilot", "pilot", False), ("west", "west", False)]
+        listed = client.get("/", follow_redirects=False)
+        assert 'id="project-open-pilot"' in listed.text
+        assert 'id="project-open-west"' in listed.text
+        assert book.home_current not in listed.text
         chosen = client.post(
             "/project",
             data={"project": "west", "next": "/training"},
             follow_redirects=False,
         )
         assert chosen.status_code == 303
+        assert _path(chosen.headers["location"]) == "/video"
+        assert read_project_file(tmp_path) == "west"
         assert (tmp_path / "ui" / "project.txt").read_bytes() == b"west\n"
         page = client.get("/training")
-        assert _options(page.text) == [("pilot", "pilot", False), ("west", "west", True)]
+        assert 'id="lab-home"' in page.text
+        assert ">west</p>" in page.text
         unknown = client.post(
             "/project",
             data={"project": "other", "next": "/training"},
             follow_redirects=True,
         )
         assert unknown.status_code == 200
+        assert unknown.url.path == "/"
         assert (tmp_path / "ui" / "project.txt").read_bytes() == b"west\n"
-        assert 'option value="west" selected' in unknown.text or _options(unknown.text)[1][2]
+        assert book.home_current in unknown.text
+        assert 'name="project" value="west"' in unknown.text
+
+
+def test_project_select_submits_on_change_without_a_button(tmp_path: Path) -> None:
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
+    with TestClient(create_app(tmp_path)) as client:
+        page = client.get("/video", follow_redirects=False)
+        assert 'id="lab-home"' in page.text
+        assert 'href="/"' in page.text
+        assert 'id="lab-project"' not in page.text
+        assert 'id="project-manager"' not in page.text
+        assert "project_shell.js" not in page.text
+        home = client.get("/", follow_redirects=False)
+    form = _form_by_action(home.text, "/project")
+    assert 'id="project-open-pilot"' in form
+    assert 'type="submit"' in form
+    assert "<select" not in form
 
 
 def test_project_write_refuses_an_escaped_symlink(tmp_path: Path) -> None:
@@ -262,14 +309,51 @@ def test_project_write_refuses_an_escaped_symlink(tmp_path: Path) -> None:
     with TestClient(create_app(workspace)) as client:
         response = client.post(
             "/project",
-            data={"project": "pilot", "next": "/"},
+            data={"project": "pilot", "next": "/video"},
             follow_redirects=False,
         )
         assert response.status_code == 303
+        assert _path(response.headers["location"]) == "/"
         assert list(outside.iterdir()) == []
         page = client.get("/")
         assert page.status_code == 200
         assert catalog("ru").project_write_failed in page.text
+
+
+def test_create_write_failure_stays_home_even_if_next_is_video(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise OSError("disk")
+
+    monkeypatch.setattr(web_app, "write_project_file", _boom)
+    list_catalogs(tmp_path)
+    with TestClient(create_app(tmp_path)) as client:
+        posted = client.post(
+            "/project/create",
+            data={
+                "name": "pit",
+                "catalog_mode": "existing",
+                "catalog_id": "excavation",
+                "next": "/video",
+            },
+            follow_redirects=False,
+        )
+        assert posted.status_code == 303
+        location = _path(posted.headers["location"])
+        assert location == "/"
+        assert location != "/video"
+        assert not (tmp_path / "ui" / "project.txt").exists()
+        assert (tmp_path / "projects" / "pit").is_dir()
+        page = client.get("/", follow_redirects=False)
+    assert page.status_code == 200
+    error = re.search(
+        r'<p class="lab-alert" id="project-home-error"[^>]*>(.*?)</p>',
+        page.text,
+    )
+    assert error is not None
+    assert catalog("ru").project_write_failed in error.group(1)
 
 
 def test_unknown_theme_and_locale_do_not_write(tmp_path: Path) -> None:
@@ -293,10 +377,21 @@ def test_unknown_theme_and_locale_do_not_write(tmp_path: Path) -> None:
 
 
 def test_label_return_keeps_video_and_frame(tmp_path: Path) -> None:
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     with TestClient(create_app(tmp_path)) as client:
-        page = client.get("/label", params={"video": "vid", "frame": "10"})
-        data = client.get("/data", params={"video": "vid", "frame": "10"})
-        video_only = client.get("/label", params={"video": "vid"})
+        page = client.get(
+            "/label",
+            params={"video": "vid", "frame": "10"},
+            follow_redirects=False,
+        )
+        data = client.get(
+            "/data",
+            params={"video": "vid", "frame": "10"},
+            follow_redirects=False,
+        )
+        video_only = client.get("/label", params={"video": "vid"}, follow_redirects=False)
         theme = client.post(
             "/theme",
             data={"theme": "light", "next": "/label?video=vid&frame=10"},
@@ -308,8 +403,8 @@ def test_label_return_keeps_video_and_frame(tmp_path: Path) -> None:
             follow_redirects=False,
         )
         project = client.post(
-            "/project",
-            data={"next": "/label?video=vid&frame=0"},
+            "/locale",
+            data={"locale": "ru", "next": "/label?video=vid&frame=0"},
             follow_redirects=False,
         )
         analysis = client.post(
@@ -337,7 +432,7 @@ def test_label_return_keeps_video_and_frame(tmp_path: Path) -> None:
             data={"theme": "dark", "next": "https://example.com"},
             follow_redirects=False,
         )
-    assert page.status_code == 200
+    assert page.status_code == 404
     assert 'name="next" value="/label?video=vid&amp;frame=10"' in page.text
     assert 'name="next" value="/label?video=vid"' in video_only.text
     assert 'name="next" value="/data"' in data.text
@@ -415,9 +510,14 @@ def test_open_workspace_lists_excavation_before_a_project(tmp_path: Path) -> Non
     with TestClient(create_app(tmp_path)) as client:
         page = client.get("/")
     assert page.status_code == 200
-    aside, _, main = page.text.partition("<main")
+    aside, main, after = _regions(page.text)
+    assert 'class="lab-workflow"' not in page.text
+    assert 'id="project-manager"' not in page.text
     assert 'id="project-create"' not in aside
     assert 'id="project-create"' in main
+    assert 'id="project-rename"' not in aside
+    assert 'id="project-delete"' not in aside
+    assert "data-project-manager-open" not in after
     assert 'id="catalog-new-fields" hidden' in page.text
     values = _option_values(_select_by_id(page.text, "catalog-id"))
     assert values[0] == ""
@@ -448,7 +548,43 @@ def test_create_project_on_excavation_stores_the_id(tmp_path: Path) -> None:
     assert list(project.rglob("catalog.yaml")) == []
     assert _catalog_id(project) == "excavation"
     assert read_project_file(tmp_path) == "pit"
+    assert created.history[0].status_code == 303
+    assert _path(created.history[0].headers["location"]) == "/video"
+    assert 'id="lab-home"' in created.text
     assert 'id="project-catalog-classes"' not in created.text
+    assert "data-project-manager-open" not in created.text
+
+
+def test_blank_catalog_keeps_the_name_on_the_create_form(tmp_path: Path) -> None:
+    book = catalog("ru")
+    with TestClient(create_app(tmp_path)) as client:
+        refused = client.post(
+            "/project/create",
+            data={"name": "pit", "catalog_mode": "existing", "catalog_id": ""},
+            follow_redirects=True,
+        )
+    assert not (tmp_path / "projects" / "pit").exists()
+    form = refused.text.split('id="project-create"', 1)[1]
+    assert book.catalog_required in form
+    assert 'value="pit"' in form
+
+
+def test_rejected_create_keeps_the_name_next_to_the_button(tmp_path: Path) -> None:
+    book = catalog("ru")
+    with TestClient(create_app(tmp_path)) as client:
+        refused = client.post(
+            "/project/create",
+            data={"name": "Карьер", "catalog_mode": "existing", "catalog_id": "excavation"},
+            follow_redirects=True,
+        )
+    assert refused.status_code == 200
+    assert not (tmp_path / "projects").exists()
+    form = refused.text.split('id="project-create"', 1)[1]
+    assert book.project_name_required not in form
+    assert "Недопустимое имя проекта." in form
+    assert 'value="Карьер"' in form
+    assert 'id="project-name"' in form
+    assert "required" in form
 
 
 def test_new_catalog_keeps_the_typed_title_in_both_locales(tmp_path: Path) -> None:
@@ -465,7 +601,7 @@ def test_new_catalog_keeps_the_typed_title_in_both_locales(tmp_path: Path) -> No
                 "class_name": "shovel",
                 "class_title": title,
                 "class_box": box,
-                "next": "/",
+                "next": "/video",
             },
             follow_redirects=True,
         )
@@ -474,7 +610,7 @@ def test_new_catalog_keeps_the_typed_title_in_both_locales(tmp_path: Path) -> No
         assert box in created.text
         english = client.post(
             "/locale",
-            data={"locale": "en", "next": "/"},
+            data={"locale": "en", "next": "/video"},
             follow_redirects=True,
         )
         assert 'lang="en"' in english.text
@@ -484,7 +620,7 @@ def test_new_catalog_keeps_the_typed_title_in_both_locales(tmp_path: Path) -> No
         assert catalog("ru").catalog_classes_heading not in english.text
         russian = client.post(
             "/locale",
-            data={"locale": "ru", "next": "/"},
+            data={"locale": "ru", "next": "/video"},
             follow_redirects=True,
         )
         assert 'lang="ru"' in russian.text
@@ -519,7 +655,7 @@ def test_create_form_copies_a_catalog_then_adds_a_row(tmp_path: Path) -> None:
                 "class_name": "marker",
                 "class_title": "Метка",
                 "class_box": "Видимая метка.",
-                "next": "/",
+                "next": "/video",
             },
             follow_redirects=True,
         )
@@ -588,6 +724,8 @@ def test_submit_without_a_catalog_does_not_create_a_project(
             follow_redirects=True,
         )
     assert catalog("ru").catalog_required in page.text
+    assert 'id="project-home-error"' in page.text
+    assert "data-project-manager-open" not in page.text
     assert english.status_code == 200
     assert catalog("en").catalog_required in english.text
     assert catalog("ru").catalog_required not in english.text
@@ -634,12 +772,156 @@ def test_partial_class_row_does_not_create_a_project(
     assert not (tmp_path / "catalogs" / "tools").exists()
 
 
+def test_rename_updates_the_name_shown_in_the_shell(tmp_path: Path) -> None:
+    english = catalog("en")
+    list_catalogs(tmp_path)
+    create_project("pit", tmp_path, catalog_id="excavation")
+    create_project("east", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pit")
+    with TestClient(create_app(tmp_path)) as client:
+        opened = client.get("/")
+        aside, main, _after = _regions(opened.text)
+        assert 'id="project-create"' in main
+        assert 'action="/project/rename"' not in aside
+        assert 'action="/project/delete"' not in aside
+        assert 'id="project-rename-pit"' in main
+        assert 'id="project-delete-pit"' in main
+        assert 'id="project-rename-east"' in main
+        assert _input_value(opened.text, "rename-name-pit") == "pit"
+        switched = client.post(
+            "/locale",
+            data={"locale": "en", "next": "/"},
+            follow_redirects=True,
+        )
+        assert english.rename_project_button in switched.text
+        assert english.delete_project_button in switched.text
+        assert english.delete_project_confirm in switched.text
+        renamed = client.post(
+            "/project/rename",
+            data={"project": "pit", "name": "Pit east", "next": "/"},
+            follow_redirects=True,
+        )
+        data_page = client.get("/data")
+        taken = client.post(
+            "/project/rename",
+            data={"project": "pit", "name": "east", "next": "/"},
+            follow_redirects=True,
+        )
+    assert renamed.status_code == 200
+    assert (tmp_path / "projects" / "pit").is_dir()
+    assert not (tmp_path / "projects" / "Pit east").exists()
+    assert read_project_file(tmp_path) == "pit"
+    assert _input_value(renamed.text, "rename-name-pit") == "Pit east"
+    assert "Pit east" in renamed.text
+    assert english.home_current in renamed.text
+    assert "data-project-manager-open" not in renamed.text
+    assert "Pit east" in data_page.text
+    assert 'id="lab-home"' in data_page.text
+    assert 'id="project-rename-pit"' not in data_page.text
+    assert "Проект «east» уже существует." in taken.text
+    assert 'id="project-home-error"' in taken.text
+    assert _input_value(taken.text, "rename-name-pit") == "Pit east"
+
+
+def test_delete_removes_the_project_and_clears_selection(tmp_path: Path) -> None:
+    book = catalog("ru")
+    list_catalogs(tmp_path)
+    for name in ("alpha", "beta", "gamma"):
+        create_project(name, tmp_path, catalog_id="excavation")
+    catalog_bytes = (tmp_path / "catalogs" / "excavation" / "catalog.yaml").read_bytes()
+    write_project_file(tmp_path, "alpha")
+    with TestClient(create_app(tmp_path)) as client:
+        opened = client.get("/")
+        assert 'name="project" value="alpha"' in opened.text
+        assert book.home_current in opened.text
+        refused = client.post(
+            "/project/delete",
+            data={"project": "alpha", "next": "/"},
+            follow_redirects=True,
+        )
+        assert (tmp_path / "projects" / "alpha").is_dir()
+        assert book.delete_confirm_required in refused.text
+        assert 'id="project-home-error"' in refused.text
+        assert "data-project-manager-open" not in refused.text
+        assert read_project_file(tmp_path) == "alpha"
+        deleted = client.post(
+            "/project/delete",
+            data={"project": "alpha", "confirm": "yes", "next": "/"},
+            follow_redirects=True,
+        )
+    assert deleted.status_code == 200
+    assert not (tmp_path / "projects" / "alpha").exists()
+    assert (tmp_path / "projects" / "beta").is_dir()
+    assert (tmp_path / "projects" / "gamma").is_dir()
+    assert read_project_file(tmp_path) is None
+    assert book.home_current not in deleted.text
+    assert "data-project-manager-open" not in deleted.text
+    assert 'name="project" value="alpha"' not in deleted.text
+    aside, main, _after = _regions(deleted.text)
+    assert 'action="/project/rename"' not in aside
+    assert 'action="/project/delete"' not in aside
+    assert 'id="project-rename-beta"' in main
+    assert 'id="project-delete-gamma"' in main
+    assert 'id="project-create"' not in aside
+    assert 'id="project-create"' in main
+    assert (tmp_path / "catalogs" / "excavation" / "catalog.yaml").read_bytes() == catalog_bytes
+
+
+@pytest.mark.parametrize("status", ["queued", "running"])
+def test_delete_refuses_while_a_workspace_job_is_active(
+    tmp_path: Path,
+    status: str,
+) -> None:
+    list_catalogs(tmp_path)
+    create_project("alpha", tmp_path, catalog_id="excavation")
+    create_project("beta", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "alpha")
+    _hold_lock(tmp_path, "alpha", status)
+    with TestClient(create_app(tmp_path)) as client:
+        refused = client.post(
+            "/project/delete",
+            data={"project": "alpha", "confirm": "yes", "next": "/data"},
+            follow_redirects=True,
+        )
+    assert refused.status_code == 200
+    assert (tmp_path / "projects" / "alpha").is_dir()
+    state = "в очереди" if status == "queued" else "выполняется"
+    assert f"Проект «alpha» нельзя удалить: задание {state}." in refused.text
+    assert 'id="project-home-error"' in refused.text
+    assert "data-project-manager-open" not in refused.text
+    assert read_project_file(tmp_path) == "alpha"
+    connection = sqlite3.connect(lab_database(tmp_path))
+    try:
+        row = connection.execute(
+            "SELECT project_id, status FROM workspace_lock WHERE singleton = 1"
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row == ("alpha", status)
+
+
 def test_handlers_pass_an_empty_session_into_the_resolvers() -> None:
     source = Path(web_app.__file__).read_text(encoding="utf-8")
     shell = (_WEB / "shell.py").read_text(encoding="utf-8")
     assert "resolve_theme(workspace, session={})" in shell
     assert "resolve_locale(workspace, session={})" in shell
     assert "resolve_locale(workspace, session={})" in source
+
+
+def _form_by_action(html: str, action: str) -> str:
+    match = re.search(
+        rf'<form\b[^>]*\baction="{re.escape(action)}"[^>]*>.*?</form>',
+        html,
+        re.DOTALL,
+    )
+    assert match is not None
+    return match.group(0)
+
+
+def _regions(html: str) -> tuple[str, str, str]:
+    before, _, rest = html.partition("<main")
+    main, _, after = rest.partition("</main>")
+    return before, main, after
 
 
 def _request(application: object, path: str) -> Request:
@@ -717,6 +999,40 @@ def _select_by_id(html: str, element_id: str) -> str:
 
 def _option_values(body: str) -> list[str]:
     return re.findall(r'value="([^"]*)"', body)
+
+
+def _hold_lock(workspace: Path, project_id: str, status: str) -> None:
+    path = lab_database(workspace)
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS workspace_lock (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                job_id TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                status TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO workspace_lock (singleton, job_id, project_id, status)
+            VALUES (1, 'job-hold', ?, ?)
+            """,
+            (project_id, status),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _input_value(html: str, element_id: str) -> str:
+    match = re.search(rf'<input\b[^>]*\bid="{element_id}"[^>]*>', html)
+    assert match is not None
+    value = re.search(r'value="([^"]*)"', match.group(0))
+    assert value is not None
+    return value.group(1)
 
 
 def _catalog_id(project: Path) -> str:

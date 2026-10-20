@@ -263,7 +263,7 @@ def _remember(request: Request, payload: dict[str, str]) -> None:
 
 
 def _redirect(video_id: str | None = None) -> RedirectResponse:
-    response = RedirectResponse("/", status_code=303)
+    response = RedirectResponse("/video", status_code=303)
     if isinstance(video_id, str) and video_id and not _bad_token(video_id):
         response.set_cookie(_COOKIE, video_id, path="/", httponly=True, samesite="lax")
     return response

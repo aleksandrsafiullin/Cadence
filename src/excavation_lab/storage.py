@@ -263,6 +263,17 @@ class ProjectRecord(TypedDict):
     sqlite_path: str
 
 
+class ProjectSummary(TypedDict):
+    project_id: str
+    name: str | None
+    catalog_id: str | None
+    created_at: str | None
+    video_count: int | None
+    episode_count: int | None
+    dataset_count: int | None
+    model_count: int | None
+
+
 class EpisodeRow(TypedDict):
     episode_id: str
     project_id: str
@@ -454,6 +465,10 @@ def delete_project(name: str, workspace: Path | None = None) -> None:
     Does not delete ``workspace/catalogs`` or ``workspace/weights``.
     A path stored in ``model_versions`` is not followed.
     Action tables in ``project.sqlite`` go with the project directory.
+    A queued, running, or cancel-requested ``workspace_lock`` row for this
+    project refuses the delete and does not stop the worker. The lock is
+    read again immediately before the tree is removed. That connection is
+    not held across the removal.
     """
     project_id = validate_project_name(name)
     root = _workspace_root(workspace)
@@ -481,7 +496,124 @@ def delete_project(name: str, workspace: Path | None = None) -> None:
         or not resolved.is_relative_to(projects)
     ):
         raise PathNotAllowedError(str(resolved))
+    _refuse_locked_delete(root, project_id)
+    # The first read can go stale after its connection closes.
+    _refuse_locked_delete(root, project_id)
     shutil.rmtree(resolved)
+
+
+def rename_project(
+    project_id: str,
+    new_name: str,
+    workspace: Path | None = None,
+) -> ProjectRecord:
+    """Update ``projects.name``. The directory and ``project_id`` stay.
+
+    An empty or whitespace-only name is rejected. A name another project
+    already uses raises ``duplicate_project_name`` and names that name.
+    """
+    project_id = validate_project_name(project_id)
+    if not isinstance(new_name, str) or not new_name.strip():
+        raise LabError("invalid_project_name", "Укажите имя проекта.")
+    name = new_name.strip()
+    root = _workspace_root(workspace)
+    for item in list_projects(root):
+        if item["project_id"] != project_id and item["name"] == name:
+            raise LabError(
+                "duplicate_project_name",
+                f"Проект «{name}» уже существует.",
+            )
+    db_path = project_sqlite(root, project_id)
+    with connect(db_path) as connection:
+        taken = connection.execute(
+            """
+            SELECT name FROM projects
+            WHERE name = ? AND project_id != ?
+            """,
+            (name, project_id),
+        ).fetchone()
+        if taken is not None:
+            raise LabError(
+                "duplicate_project_name",
+                f"Проект «{taken['name']}» уже существует.",
+            )
+        try:
+            cursor = connection.execute(
+                "UPDATE projects SET name = ? WHERE project_id = ?",
+                (name, project_id),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise LabError(
+                "duplicate_project_name",
+                f"Проект «{name}» уже существует.",
+            ) from exc
+        if cursor.rowcount != 1:
+            raise LabError(
+                "project_not_found",
+                f"Проект «{project_id}» не найден.",
+            )
+    return _project_record(root, project_id)
+
+
+def _refuse_locked_delete(root: Path, project_id: str) -> None:
+    """Refuse while this project's workspace lock is still live.
+
+    ``queued``, ``running``, and ``cancel_requested`` match the live lock.
+    A symlink ``lab.sqlite`` is not followed.
+    """
+    from excavation_lab.jobs import lab_database
+
+    path = lab_database(root)
+    if path.is_symlink():
+        raise LabError(
+            "project_job_active",
+            f"Проект «{project_id}» нельзя удалить: "
+            "файл блокировки задания — символическая ссылка.",
+        )
+    if not path.is_file():
+        return
+    connection = sqlite3.connect(path, timeout=5.0)
+    row: sqlite3.Row | None = None
+    try:
+        connection.row_factory = sqlite3.Row
+        try:
+            present = connection.execute(
+                """
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'workspace_lock'
+                """
+            ).fetchone()
+            if present is not None:
+                row = connection.execute(
+                    """
+                    SELECT status FROM workspace_lock
+                    WHERE singleton = 1 AND project_id = ?
+                    """,
+                    (project_id,),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise LabError(
+                "project_job_active",
+                f"Проект «{project_id}» нельзя удалить: "
+                "не удалось прочитать блокировку задания.",
+            ) from exc
+    finally:
+        connection.close()
+    if row is None:
+        return
+    status = row["status"]
+    if status == JobStatus.queued.value:
+        state = "в очереди"
+    elif status == JobStatus.running.value:
+        state = "выполняется"
+    elif status == JobStatus.cancel_requested.value:
+        state = "отменяется"
+    else:
+        return
+    raise LabError(
+        "project_job_active",
+        f"Проект «{project_id}» нельзя удалить: задание {state}.",
+    )
 
 
 def project_directory(workspace: Path, project_id: str) -> Path:
@@ -614,6 +746,117 @@ def _project_record(workspace: Path, project_id: str) -> ProjectRecord:
         project_dir=str(directory),
         sqlite_path=str(db_path),
     )
+
+
+def list_project_summaries(workspace: Path) -> list[ProjectSummary]:
+    """One summary per project directory. Unknown fields are ``None``.
+
+    A successful ``COUNT(*)`` of zero stays ``0``. An escaping
+    ``project.sqlite`` symlink does not raise: that directory still yields
+    one row whose other fields are ``None``. This does not take the
+    workspace lock and does not read the workspace job database.
+    """
+    root = _workspace_root(workspace)
+    projects_dir = root / "projects"
+    if not projects_dir.exists():
+        return []
+    resolved_dir = projects_dir.resolve()
+    if not resolved_dir.is_relative_to(root):
+        raise PathNotAllowedError(str(resolved_dir))
+    if not resolved_dir.is_dir():
+        return []
+    found: list[ProjectSummary] = []
+    for child in sorted(resolved_dir.iterdir(), key=lambda item: item.name):
+        if child.name.startswith("."):
+            continue
+        try:
+            project_id = validate_project_name(child.name)
+        except LabError:
+            continue
+        database = child / "project.sqlite"
+        if not database.is_file() and not database.is_symlink():
+            continue
+        found.append(_summary_from_database(root, project_id))
+    return found
+
+
+def _summary_from_database(workspace: Path, project_id: str) -> ProjectSummary:
+    summary = _empty_summary(project_id)
+    try:
+        db_path = project_sqlite(workspace, project_id)
+    except (PathNotAllowedError, LabError):
+        return summary
+    try:
+        with connect(db_path) as connection:
+            _read_project_identity(connection, summary)
+            summary["video_count"] = _count_rows(
+                connection, "SELECT COUNT(*) AS n FROM videos"
+            )
+            summary["episode_count"] = _count_rows(
+                connection, "SELECT COUNT(*) AS n FROM episodes"
+            )
+            summary["dataset_count"] = _count_rows(
+                connection, "SELECT COUNT(*) AS n FROM dataset_versions"
+            )
+            summary["model_count"] = _count_rows(
+                connection, "SELECT COUNT(*) AS n FROM model_versions"
+            )
+    except sqlite3.Error:
+        return summary
+    return summary
+
+
+def _empty_summary(project_id: str) -> ProjectSummary:
+    return {
+        "project_id": project_id,
+        "name": None,
+        "catalog_id": None,
+        "created_at": None,
+        "video_count": None,
+        "episode_count": None,
+        "dataset_count": None,
+        "model_count": None,
+    }
+
+
+def _read_project_identity(
+    connection: sqlite3.Connection,
+    summary: ProjectSummary,
+) -> None:
+    try:
+        row = connection.execute(
+            """
+            SELECT name, catalog_id, created_at
+            FROM projects
+            LIMIT 1
+            """
+        ).fetchone()
+    except sqlite3.Error:
+        return
+    if row is None:
+        return
+    summary["name"] = _stored_text(row["name"])
+    summary["catalog_id"] = _stored_text(row["catalog_id"])
+    summary["created_at"] = _stored_text(row["created_at"])
+
+
+def _count_rows(connection: sqlite3.Connection, statement: str) -> int | None:
+    try:
+        row = connection.execute(statement).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    value = row["n"]
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _stored_text(value: object) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value
 
 
 def allowed_media_roots(workspace: Path, project_id: str) -> list[Path]:

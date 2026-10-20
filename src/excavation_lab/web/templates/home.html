@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+{% block app_class %} lab-app-home{% endblock %}
+{% block sidebar %}
+<p class="lab-section">{{ product_title }}</p>
+{% endblock %}
+{% block toolbar %}{% endblock %}
+{% block main %}
+<div class="lab-home">
+  <div class="lab-home-toolbar">
+    <p class="lab-section">{{ product_title }}</p>
+    <div class="lab-home-tools">
+      <form method="post" action="/theme">
+        <input type="hidden" name="next" value="/">
+        <div class="lab-segmented" role="group" aria-label="{{ theme_label }}">
+          <button type="submit" class="lab-btn" name="theme" value="light" aria-pressed="{{ 'true' if theme == 'light' else 'false' }}">{{ theme_light }}</button>
+          <button type="submit" class="lab-btn" name="theme" value="dark" aria-pressed="{{ 'true' if theme == 'dark' else 'false' }}">{{ theme_dark }}</button>
+        </div>
+      </form>
+      <form method="post" action="/locale">
+        <input type="hidden" name="next" value="/">
+        <div class="lab-segmented" role="group" aria-label="{{ locale_label }}">
+          <button type="submit" class="lab-btn" name="locale" value="ru" aria-pressed="{{ 'true' if lang == 'ru' else 'false' }}">{{ language_russian }}</button>
+          <button type="submit" class="lab-btn" name="locale" value="en" aria-pressed="{{ 'true' if lang == 'en' else 'false' }}">{{ language_english }}</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  <p class="lab-sr">{{ theme_display_only }}</p>
+  <p class="lab-sr">{{ locale_caption }}</p>
+  <header class="lab-home-head">
+    <div>
+      <h1 class="lab-title">{{ home_title }}</h1>
+      <p class="lab-lead">{{ home_lead }}</p>
+    </div>
+    <button type="button" class="lab-btn lab-btn-primary" id="project-create-open" data-dialog="project-create-dialog">{{ create_project_button }}</button>
+  </header>
+  {% if home_error %}
+  <p class="lab-alert" id="project-home-error" role="alert">{{ home_error }}</p>
+  {% endif %}
+  {% if not rows %}
+  <p class="lab-empty">{{ home_empty }}</p>
+  {% else %}
+  <div class="lab-home-grid">
+    {% for item in rows %}
+    <article class="lab-home-card{% if item.project_id == project_id %} is-current{% endif %}">
+      <form id="project-open-{{ item.project_id }}" method="post" action="/project">
+        <input type="hidden" name="project" value="{{ item.project_id }}">
+        <button type="submit" class="lab-home-card-hit">
+          <span class="lab-home-name">{{ item.name }}</span>
+          {% if item.project_id == project_id %}<span class="lab-home-current">{{ home_current }}</span>{% endif %}
+          <span class="lab-home-meta">
+            <span><span>{{ home_id_column }}</span> <code>{{ item.project_id }}</code></span>
+            <span><span>{{ home_catalog_column }}</span> {{ item.catalog_id }}</span>
+          </span>
+          <span class="lab-home-pills">
+            <span>{{ item.video_count }} {{ home_videos_column }}</span>
+            <span>{{ item.episode_count }} {{ home_episodes_column }}</span>
+            <span>{{ item.dataset_count }} {{ home_datasets_column }}</span>
+            <span>{{ item.model_count }} {{ home_models_column }}</span>
+          </span>
+          <span class="lab-home-updated">{{ home_created_column }} {{ item.created_at }}</span>
+        </button>
+      </form>
+      <div class="lab-home-icons">
+        <button type="button" class="lab-icon-btn" data-dialog="project-rename-dialog-{{ item.project_id }}" aria-label="{{ rename_project_button }}" title="{{ rename_project_button }}">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11.2 1.8a1.6 1.6 0 0 1 2.3 2.2L6.2 11.3 3 12.2l.9-3.2 7.3-7.2Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M2.5 14.2h11" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+        </button>
+        <button type="button" class="lab-icon-btn" data-dialog="project-delete-dialog-{{ item.project_id }}" aria-label="{{ delete_project_button }}" title="{{ delete_project_button }}">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 4.2h9.6M6.2 4.1V2.8h3.6v1.3M4.4 4.2l.6 9h5.9l.6-9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+      <dialog id="project-rename-dialog-{{ item.project_id }}" class="lab-dialog lab-dialog-narrow">
+        <div class="lab-dialog-head">
+          <h2 class="lab-section">{{ rename_project_button }}</h2>
+          <form method="dialog"><button type="submit" class="lab-btn">{{ project_manager_close }}</button></form>
+        </div>
+        <p class="lab-caption"><code>{{ item.project_id }}</code></p>
+        <form class="lab-form" id="project-rename-{{ item.project_id }}" method="post" action="/project/rename">
+          <input type="hidden" name="project" value="{{ item.project_id }}">
+          <label class="lab-label" for="rename-name-{{ item.project_id }}">{{ rename_project_label }}</label>
+          <input class="lab-input" id="rename-name-{{ item.project_id }}" name="name" value="{{ item.rename_value }}" required>
+          <button type="submit" class="lab-btn lab-btn-primary">{{ rename_project_button }}</button>
+        </form>
+      </dialog>
+      <dialog id="project-delete-dialog-{{ item.project_id }}" class="lab-dialog lab-dialog-narrow">
+        <div class="lab-dialog-head">
+          <h2 class="lab-section">{{ delete_project_button }}</h2>
+          <form method="dialog"><button type="submit" class="lab-btn">{{ project_manager_close }}</button></form>
+        </div>
+        <p class="lab-lead">{{ item.name }}</p>
+        <form class="lab-form" id="project-delete-{{ item.project_id }}" method="post" action="/project/delete">
+          <input type="hidden" name="project" value="{{ item.project_id }}">
+          <label class="lab-check" for="project-delete-confirm-{{ item.project_id }}">
+            <input type="checkbox" id="project-delete-confirm-{{ item.project_id }}" name="confirm" value="yes">
+            {{ delete_project_confirm }}
+          </label>
+          <button type="submit" class="lab-btn">{{ delete_project_button }}</button>
+        </form>
+      </dialog>
+    </article>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+<dialog id="project-create-dialog" class="lab-dialog"{% if create_draft %} data-open{% endif %}>
+  <div class="lab-dialog-head">
+    <h2 class="lab-section" id="project-create-title">{{ create_project_heading }}</h2>
+    <form method="dialog"><button type="submit" class="lab-btn">{{ project_manager_close }}</button></form>
+  </div>
+  <form method="post" action="/project/create" id="project-create" class="lab-form">
+    <label class="lab-label" for="project-name">{{ create_project_name }}</label>
+    <input class="lab-input" id="project-name" name="name" value="{{ create_draft | default('') }}" autocomplete="off" required>
+    <p class="lab-caption">{{ create_project_name_hint }}</p>
+    <div class="lab-choice" role="radiogroup" aria-label="{{ create_project_heading }}">
+      <label class="lab-label">
+        <input type="radio" name="catalog_mode" value="existing" checked>
+        {{ catalog_existing }}
+      </label>
+      <label class="lab-label">
+        <input type="radio" name="catalog_mode" value="new">
+        {{ catalog_new }}
+      </label>
+    </div>
+    <div id="catalog-existing-fields">
+      <label class="lab-label" for="catalog-id">{{ catalog_existing }}</label>
+      <select class="lab-select" id="catalog-id" name="catalog_id">
+        {% set only_catalog = catalogs[0] if catalogs | length == 1 else '' %}
+        <option value=""{% if not only_catalog %} selected{% endif %}>{{ catalog_none }}</option>
+        {% for catalog_id in catalogs | default([]) %}
+        <option value="{{ catalog_id }}"{% if catalog_id == only_catalog %} selected{% endif %}>{{ catalog_id }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div id="catalog-new-fields" hidden>
+      <label class="lab-label" for="new-catalog-id">{{ catalog_id_label }}</label>
+      <input class="lab-input" id="new-catalog-id" name="new_catalog_id" autocomplete="off">
+      <label class="lab-label" for="copy-from">{{ catalog_copy_label }}</label>
+      <select class="lab-select" id="copy-from" name="copy_from">
+        <option value="" selected>{{ catalog_copy_none }}</option>
+        {% for catalog_id in catalogs | default([]) %}
+        <option value="{{ catalog_id }}">{{ catalog_id }}</option>
+        {% endfor %}
+      </select>
+      <p class="lab-label">{{ catalog_classes_heading }}</p>
+      <table class="lab-catalog-table" id="catalog-editor">
+        <thead>
+          <tr>
+            <th>{{ class_name_column }}</th>
+            <th>{{ class_title_column }}</th>
+            <th>{{ class_box_column }}</th>
+          </tr>
+        </thead>
+        <tbody id="catalog-class-rows">
+          <tr>
+            <td><input class="lab-input" name="class_name" autocomplete="off"></td>
+            <td><input class="lab-input" name="class_title" autocomplete="off"></td>
+            <td><input class="lab-input" name="class_box" autocomplete="off"></td>
+          </tr>
+        </tbody>
+      </table>
+      <button type="button" class="lab-btn" id="add-class-row">{{ add_class_row }}</button>
+    </div>
+    {% if home_error %}
+    <p class="lab-alert" role="alert">{{ home_error }}</p>
+    {% endif %}
+    <button type="submit" class="lab-btn lab-btn-primary">{{ create_project_button }}</button>
+  </form>
+</dialog>
+{% endblock %}
+{% block scripts %}
+<script src="/static/project_catalog.js"></script>
+{% endblock %}

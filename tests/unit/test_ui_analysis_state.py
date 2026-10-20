@@ -40,6 +40,7 @@ from excavation_lab.ui import copy as ui_copy
 from excavation_lab.ui.video_page import job_status_line
 from excavation_lab.web import analysis_routes
 from excavation_lab.web.app import create_app
+from excavation_lab.web.preferences import write_project_file
 
 _SYNTHETIC_PATH = Path(__file__).resolve().parents[1] / "fixtures" / "synthetic.py"
 _SYNTHETIC_SPEC = importlib.util.spec_from_file_location(
@@ -173,6 +174,7 @@ def _requests(workspace: Path, project_id: str) -> list[Path]:
 def _clip(tmp_path: Path) -> str:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     clip = tmp_path / "clip.mp4"
     write_synthetic_mp4(clip, 0.4, 10)
     added = add_video(tmp_path, "pilot", clip)
@@ -263,6 +265,7 @@ def test_empty_header_is_not_calculated_and_draws_no_boxes() -> None:
 def test_empty_project_screen_has_no_metrics_or_boxes(tmp_path: Path) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     with TestClient(create_app(tmp_path)) as client:
         response = client.get("/analysis")
     assert response.status_code == 200

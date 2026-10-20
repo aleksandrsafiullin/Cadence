@@ -16,6 +16,7 @@ from starlette.testclient import TestClient
 
 from excavation_lab.datasets.catalog import list_catalogs
 from excavation_lab.errors import PathNotAllowedError
+from excavation_lab.storage import create_project
 from excavation_lab.ui import copy as ui_copy
 from excavation_lab.ui import locale as locale_mod
 from excavation_lab.ui import navigation
@@ -29,6 +30,7 @@ from excavation_lab.ui.locale import (
     write_locale_file,
 )
 from excavation_lab.web.app import create_app
+from excavation_lab.web.preferences import write_project_file
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _REPO_LOCALE = REPO_ROOT / "workspace" / "ui" / "locale.txt"
@@ -47,7 +49,7 @@ _ENGLISH_TITLES = (
     "Events",
 )
 _ENGLISH_ROUTES = (
-    ("/", "Video", "video"),
+    ("/video", "Video", "video"),
     ("/data", "Data and labeling", "data"),
     ("/training", "Training", "training"),
     ("/analysis", "Analysis", "analysis"),
@@ -369,14 +371,20 @@ def test_shell_order_and_shared_resolver() -> None:
         REPO_ROOT / "src" / "excavation_lab" / "web" / "templates" / "base.html"
     ).read_text(encoding="utf-8")
     order = [
-        "kicker_project",
-        'action="/project"',
+        'id="lab-home"',
+        "back_to_projects",
         "kicker_workflow",
         "<nav",
-        "kicker_appearance",
+        "{% block toolbar %}",
         'action="/theme"',
         'action="/locale"',
+        "theme_display_only",
+        "locale_caption",
     ]
+    sidebar = template.split("<aside", 1)[1].split("</aside>", 1)[0]
+    assert "kicker_appearance" not in sidebar
+    assert 'name="theme"' not in sidebar
+    assert 'name="locale"' not in sidebar
     positions = [template.index(token) for token in order]
     assert positions == sorted(positions)
     assert "PAGE_DESCRIPTIONS" not in template
@@ -405,25 +413,32 @@ def test_shell_order_and_shared_resolver() -> None:
 def test_render_frame_maps_onto_the_russian_catalog(tmp_path: Path, title: str) -> None:
     assert page_id_for(title) == "video"
     book = ui_copy.catalog("ru")
+    list_catalogs(tmp_path)
+    create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     with TestClient(create_app(tmp_path)) as client:
-        response = client.get("/")
+        response = client.get("/video", follow_redirects=False)
     assert response.status_code == 200
     text = response.text
     assert "<h1" in text
     assert book.page_video in text
     assert book.lead("video") in text
     assert ui_copy.PAGE_DESCRIPTIONS[ui_copy.PAGE_VIDEO] in text
-    assert text.index("PROJECT") < text.index("WORKFLOW") < text.index("APPEARANCE")
+    aside = _aside(text)
+    main = _main(text)
+    assert text.index('id="lab-home"') < text.index("WORKFLOW")
+    assert 'name="theme"' not in aside
+    assert 'name="locale"' not in aside
+    assert 'name="theme"' in main
+    assert 'name="locale"' in main
     assert _button_pressed(text, "Light") == "false"
     assert _button_pressed(text, "Dark") == "true"
     assert _button_pressed(text, "Русский") == "true"
     assert _button_pressed(text, "English") == "false"
     assert 'aria-label="Язык"' in text
-    assert 'name="locale"' in text
-    assert 'name="theme"' in text
     assert text.index(book.theme_display_only) < text.index(book.locale_caption)
     assert not (tmp_path / "ui" / "locale.txt").exists()
-    _assert_no_project_html(text, ui_copy.NO_PROJECT)
+    assert '<p class="lab-label">pilot</p>' in text
 
 
 def test_english_file_renders_english_chrome_without_rewriting(tmp_path: Path) -> None:
@@ -431,9 +446,12 @@ def test_english_file_renders_english_chrome_without_rewriting(tmp_path: Path) -
     ui = workspace / "ui"
     ui.mkdir(parents=True)
     (ui / "locale.txt").write_text("en", encoding="utf-8")
+    list_catalogs(workspace)
+    create_project("pilot", workspace, catalog_id="excavation")
+    write_project_file(workspace, "pilot")
     book = ui_copy.catalog("en")
     with TestClient(create_app(workspace)) as client:
-        response = client.get("/")
+        response = client.get("/video", follow_redirects=False)
     assert response.status_code == 200
     assert (ui / "locale.txt").read_text(encoding="utf-8") == "en"
     text = response.text
@@ -441,15 +459,21 @@ def test_english_file_renders_english_chrome_without_rewriting(tmp_path: Path) -
     assert book.page_video in text
     assert book.lead("video") in text
     assert book.theme_display_only in text
+    aside = _aside(text)
+    main = _main(text)
     assert text.index(book.theme_display_only) < text.index(book.locale_caption)
-    assert text.index("PROJECT") < text.index("WORKFLOW") < text.index("APPEARANCE")
+    assert text.index('id="lab-home"') < text.index("WORKFLOW")
+    assert 'name="theme"' not in aside
+    assert 'name="locale"' not in aside
+    assert 'name="theme"' in main
+    assert 'name="locale"' in main
     assert "Cadence" in text
     assert _button_pressed(text, "Light") == "false"
     assert _button_pressed(text, "Dark") == "true"
     assert _button_pressed(text, "English") == "true"
     assert _button_pressed(text, "Русский") == "false"
     assert 'aria-label="Language"' in text
-    _assert_no_project_html(text, book.no_project)
+    assert '<p class="lab-label">pilot</p>' in text
 
 
 def test_language_switch_on_empty_workspace(tmp_path: Path) -> None:
@@ -459,17 +483,20 @@ def test_language_switch_on_empty_workspace(tmp_path: Path) -> None:
     with TestClient(create_app(workspace)) as client:
         before = client.get("/")
         assert before.status_code == 200
-        _assert_no_project_html(before.text, ui_copy.NO_PROJECT)
+        assert ui_copy.catalog("ru").home_empty in before.text
+        assert 'id="project-open-' not in before.text
         assert not (workspace / "ui" / "locale.txt").exists()
         assert not (workspace / "ui" / "theme.txt").exists()
         switched = client.post(
             "/locale",
-            data={"locale": "en", "next": "/"},
+            data={"locale": "en", "next": "/video"},
             follow_redirects=True,
         )
     assert switched.status_code == 200
     assert switched.history[0].status_code == 303
-    assert urlparse(switched.history[0].headers["location"]).path == "/"
+    assert urlparse(switched.history[0].headers["location"]).path == "/video"
+    assert switched.history[1].status_code == 303
+    assert urlparse(switched.history[1].headers["location"]).path == "/"
     written = workspace / "ui" / "locale.txt"
     assert written.read_bytes() == b"en\n"
     assert written.resolve().is_relative_to(workspace.resolve())
@@ -478,13 +505,13 @@ def test_language_switch_on_empty_workspace(tmp_path: Path) -> None:
     assert 'value="en"' in switched.text
     assert "English" in switched.text
     text = switched.text
-    assert book.page_video in text
-    assert book.lead("video") in text
+    assert _h1(text) == "Projects"
+    assert book.lead("video") not in _main(text)
     assert _button_pressed(text, "Dark") == "true"
     assert _button_pressed(text, "English") == "true"
     assert 'name="theme"' in text
     assert text.index(book.theme_display_only) < text.index(book.locale_caption)
-    _assert_no_project_html(text, "no project")
+    assert book.home_empty in text
     assert not (workspace / "ui" / "theme.txt").exists()
     assert not (workspace / "ui" / "project.txt").exists()
 
@@ -572,11 +599,11 @@ def test_english_pages_reject_leftover_cyrillic(tmp_path: Path) -> None:
     workspace = tmp_path / "ws"
     workspace.mkdir()
     with TestClient(create_app(workspace)) as client:
-        first = client.get("/")
-        assert first.status_code == 200
+        first = client.get("/video", follow_redirects=False)
+        assert first.status_code == 303
+        assert urlparse(first.headers["location"]).path == "/"
         assert not (workspace / "ui" / "locale.txt").exists()
-        assert _h1(first.text) == ui_copy.PAGE_VIDEO
-        _assert_no_project_html(first.text, ui_copy.NO_PROJECT)
+        assert 'class="lab-workflow"' not in first.text
         switched = client.post(
             "/locale",
             data={"locale": "en", "next": "/"},
@@ -587,11 +614,13 @@ def test_english_pages_reject_leftover_cyrillic(tmp_path: Path) -> None:
         assert written.read_bytes() == b"en\n"
         assert written.resolve().is_relative_to(workspace.resolve())
         assert not written.resolve().is_relative_to(_REPO_WORKSPACE.resolve())
-        opened = client.get("/")
+        list_catalogs(workspace)
+        create_project("pilot", workspace, catalog_id="excavation")
+        write_project_file(workspace, "pilot")
+        opened = client.get("/video", follow_redirects=False)
         assert opened.status_code == 200
         assert 'lang="en"' in opened.text
         assert _h1(opened.text) == "Video"
-        _assert_no_project_html(opened.text, ui_copy.catalog("en").no_project)
         assert ui_copy.catalog("en").no_project == "no project"
         _assert_english_chrome_html(opened.text)
 
@@ -600,18 +629,16 @@ def test_english_pages_reject_leftover_cyrillic(tmp_path: Path) -> None:
         seen_titles: list[str] = []
         for path, title, kind in _ENGLISH_ROUTES:
             assert written.read_bytes() == b"en\n"
-            page = client.get(path)
+            page = client.get(path, follow_redirects=False)
             assert page.status_code == 200, title
             html = page.text
             assert written.read_bytes() == b"en\n"
             assert 'lang="en"' in html
-            _assert_no_project_html(html, book.no_project)
             assert _h1(html) == title
             seen_titles.append(title)
             if kind == "video":
-                assert book.need_project in html
-                assert book.choose_file_button not in html
-                assert 'action="/video/choose"' not in html
+                assert book.choose_file_button in html
+                assert 'action="/video/choose"' in html
             else:
                 assert "not calculated" in html
             _assert_english_chrome_html(html)
@@ -626,7 +653,7 @@ def test_english_pages_reject_leftover_cyrillic(tmp_path: Path) -> None:
                 assert len(metrics) == 12
                 assert [item[0] for item in metrics] == list(book.event_indicator_labels)
                 assert [item[1] for item in metrics] == [book.not_calculated] * 12
-                assert "<button" not in _main(html)
+                assert "<button" not in _main(html).split("<h1", 1)[1]
                 _assert_no_plot_html(html)
             if kind == "quality":
                 assert "not evaluated" in html
@@ -637,14 +664,6 @@ def test_english_pages_reject_leftover_cyrillic(tmp_path: Path) -> None:
                     assert value == book.not_calculated, label
         assert tuple(seen_titles) == _ENGLISH_TITLES
         assert leftovers == []
-        list_catalogs(workspace)
-        create_project("pilot", workspace, catalog_id="excavation")
-        video = client.get("/")
-        assert video.status_code == 200
-        assert book.choose_file_button in video.text
-        assert 'action="/video/choose"' in video.text
-        assert book.upload_label not in video.text
-        assert _leftover_cyrillic(video.text) == []
 
 
 def _analysis_time(html: str) -> tuple[str, str]:
@@ -752,6 +771,12 @@ def _h1(html: str) -> str:
     return match.group(1).strip()
 
 
+def _aside(html: str) -> str:
+    match = re.search(r'<aside class="lab-sidebar">(.*)</aside>', html, re.DOTALL)
+    assert match is not None
+    return match.group(1)
+
+
 def _main(html: str) -> str:
     match = re.search(r'<main class="lab-main" id="content">(.*)</main>', html, re.DOTALL)
     assert match is not None
@@ -801,11 +826,7 @@ def _assert_no_plot_html(html: str) -> None:
 
 def _assert_english_chrome_html(html: str) -> None:
     assert "Cadence" in html
-    assert re.findall(r'<p class="lab-kicker">([^<]*)</p>', html) == [
-        "PROJECT",
-        "WORKFLOW",
-        "APPEARANCE",
-    ]
+    assert re.findall(r'<p class="lab-kicker">([^<]*)</p>', html) == ["WORKFLOW"]
     assert _button_pressed(html, "Light") in {"true", "false"}
     assert _button_pressed(html, "Dark") in {"true", "false"}
 
@@ -845,6 +866,7 @@ def _finished_run(workspace: Path, stamps: tuple[float, float]) -> str:
 
     list_catalogs(workspace)
     create_project("pilot", workspace, catalog_id="excavation")
+    write_project_file(workspace, "pilot")
     clip = workspace / "clip.mp4"
     spec_path = Path(__file__).resolve().parents[1] / "fixtures" / "synthetic.py"
     spec = importlib.util.spec_from_file_location("locale_synthetic_mp4", spec_path)

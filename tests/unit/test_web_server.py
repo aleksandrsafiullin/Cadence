@@ -7,6 +7,7 @@ import socket
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 from starlette.testclient import TestClient
@@ -24,6 +25,7 @@ def test_index_is_an_empty_shell(tmp_path: Path) -> None:
     book = catalog("ru")
     with TestClient(create_app(tmp_path)) as client:
         response = client.get("/")
+        video = client.get("/video", follow_redirects=False)
     assert response.status_code == 200
     text = response.text
     assert PRODUCT_TITLE in text
@@ -34,6 +36,7 @@ def test_index_is_an_empty_shell(tmp_path: Path) -> None:
     assert 'href="#content"' in text
     assert "К содержанию" in text
     assert "<video" not in text.lower()
+    assert 'action="/video/choose"' not in text
     assert "http://" not in text
     assert "https://" not in text
     main = re.search(
@@ -42,9 +45,16 @@ def test_index_is_an_empty_shell(tmp_path: Path) -> None:
         re.DOTALL,
     )
     assert main is not None
-    assert book.page_video in main.group(1)
-    assert book.lead("video") in main.group(1)
+    assert book.home_title in main.group(1)
+    assert book.home_empty in main.group(1)
+    assert book.page_video not in main.group(1)
+    assert book.lead("video") not in main.group(1)
     assert "<video" not in main.group(1).lower()
+    assert video.status_code == 303
+    assert urlparse(video.headers["location"]).path == "/"
+    assert 'action="/video/choose"' not in video.text
+    assert "<video" not in video.text.lower()
+    assert 'class="lab-workflow"' not in video.text
     application = create_app(tmp_path)
     assert application.state.workspace == tmp_path
 

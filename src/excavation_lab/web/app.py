@@ -8,7 +8,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from starlette.applications import Starlette
 from starlette.datastructures import FormData
 from starlette.requests import Request
-from starlette.responses import FileResponse, HTMLResponse, RedirectResponse
+from starlette.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from starlette.routing import BaseRoute, Mount, Route
 from starlette.staticfiles import StaticFiles
 
@@ -29,13 +29,20 @@ from excavation_lab.web.analysis_routes import analysis_context, analysis_routes
 from excavation_lab.web.data_routes import data_context, data_routes
 from excavation_lab.web.label_routes import label_context, label_routes
 from excavation_lab.web.preferences import (
+    clear_project_file,
     consume_flash,
+    read_project_file,
     write_flash,
     write_project_file,
 )
 from excavation_lab.web.quality_routes import quality_context, quality_routes
 from excavation_lab.web.routes import job_routes, video_context, video_routes
-from excavation_lab.web.shell import RETURN_PATHS, label_return_target, page_shell
+from excavation_lab.web.shell import (
+    RETURN_PATHS,
+    home_context,
+    label_return_target,
+    page_shell,
+)
 from excavation_lab.web.training_routes import training_context, training_routes
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -70,53 +77,106 @@ def _jinja() -> Environment:
 
 
 def _get(page_id: str):
-    async def endpoint(request: Request) -> HTMLResponse:
+    async def endpoint(request: Request) -> Response:
         return _render(request, page_id)
 
     endpoint.__name__ = f"get_{page_id}"
     return endpoint
 
 
+async def get_home(request: Request) -> HTMLResponse:
+    """Project list. Not a navigation entry and not the video page."""
+    flash = _take_flash(request)
+    context = home_context(request)
+    error = flash.get("error")
+    context["home_error"] = error if isinstance(error, str) else ""
+    draft = flash.get("draft_name")
+    context["create_draft"] = draft if isinstance(draft, str) else ""
+    templates: Environment = request.app.state.templates
+    markup = templates.get_template("home.html").render(**context)
+    return HTMLResponse(markup)
+
+
 async def _post_project(request: Request) -> RedirectResponse:
     form = await _fields(request)
-    target = _safe_next(form.get("next"))
-    chosen = form.get("project")
-    if chosen:
-        workspace = _workspace(request)
-        try:
-            projects = storage.list_projects(workspace)
-        except LabError:
-            projects = []
-        if any(item["project_id"] == chosen for item in projects):
-            try:
-                write_project_file(workspace, chosen)
-            except Exception:  # noqa: BLE001 — a failed preference write stays on the page
-                locale_name = resolve_locale(workspace, session={})
-                _stash_notice(request, catalog(locale_name).project_write_failed)
-    return _redirect(target)
+    chosen = form.get("project", "").strip()
+    workspace = _workspace(request)
+    book = catalog(resolve_locale(workspace, session={}))
+    if not chosen:
+        _stash_notice(request, book.project_name_required)
+        return _redirect("/")
+    try:
+        storage.project_sqlite(workspace, chosen)
+    except LabError as exc:
+        _stash_notice(request, exc.message)
+        return _redirect("/")
+    try:
+        write_project_file(workspace, chosen)
+    except Exception:  # noqa: BLE001 — a failed preference write stays on home
+        _stash_notice(request, book.project_write_failed)
+        return _redirect("/")
+    return _redirect("/video")
 
 
 async def _post_project_create(request: Request) -> RedirectResponse:
     form = await request.form()
-    target = _safe_next(_text(form.get("next")))
     workspace = _workspace(request)
     book = catalog(resolve_locale(workspace, session={}))
+    draft = _token(form.get("name"))
     try:
         name = _posted_project_name(form)
         # A blank choice is not the seed. create_project runs only with an id.
         catalog_id = _posted_catalog(workspace, form)
         record = storage.create_project(name, workspace, catalog_id=catalog_id)
     except _ChoiceError as exc:
-        _stash_notice(request, getattr(book, exc.key))
-        return _redirect(target)
+        _stash_notice(request, getattr(book, exc.key), draft_name=draft)
+        return _redirect("/")
     except LabError as exc:
-        _stash_notice(request, exc.message)
-        return _redirect(target)
+        _stash_notice(request, exc.message, draft_name=draft)
+        return _redirect("/")
     try:
         write_project_file(workspace, record["project_id"])
-    except Exception:  # noqa: BLE001 — a failed preference write stays on the page
+    except Exception:  # noqa: BLE001 — a failed preference write stays on home
         _stash_notice(request, book.project_write_failed)
-    return _redirect(target)
+        return _redirect("/")
+    return _redirect("/video")
+
+
+async def _post_project_rename(request: Request) -> RedirectResponse:
+    form = await request.form()
+    workspace = _workspace(request)
+    book = catalog(resolve_locale(workspace, session={}))
+    try:
+        name = _posted_project_name(form)
+        storage.rename_project(_token(form.get("project")), name, workspace)
+    except _ChoiceError as exc:
+        _stash_notice(request, getattr(book, exc.key))
+        return _redirect("/")
+    except LabError as exc:
+        _stash_notice(request, exc.message)
+        return _redirect("/")
+    return _redirect("/")
+
+
+async def _post_project_delete(request: Request) -> RedirectResponse:
+    form = await request.form()
+    workspace = _workspace(request)
+    book = catalog(resolve_locale(workspace, session={}))
+    if _token(form.get("confirm")) != "yes":
+        _stash_notice(request, book.delete_confirm_required)
+        return _redirect("/")
+    project_id = _token(form.get("project"))
+    try:
+        storage.delete_project(project_id, workspace)
+    except LabError as exc:
+        _stash_notice(request, exc.message)
+        return _redirect("/")
+    try:
+        if read_project_file(workspace) == project_id:
+            clear_project_file(workspace)
+    except Exception:  # noqa: BLE001 — a failed preference write stays on home
+        _stash_notice(request, book.project_write_failed)
+    return _redirect("/")
 
 
 async def _post_theme(request: Request) -> RedirectResponse:
@@ -151,8 +211,11 @@ def create_app(workspace: Path) -> Starlette:
     """Build the page server for one workspace."""
     templates = _jinja()
     routes: list[BaseRoute] = [
-        Route(path, _get(page_id), methods=["GET"]) for page_id, path, _attr in _PAGE_ROUTES
+        Route("/", get_home, methods=["GET"]),
     ]
+    routes.extend(
+        Route(path, _get(page_id), methods=["GET"]) for page_id, path, _attr in _PAGE_ROUTES
+    )
     routes.extend(video_routes())
     routes.extend(data_routes())
     routes.extend(label_routes())
@@ -165,6 +228,8 @@ def create_app(workspace: Path) -> Starlette:
         [
             Route("/project", _post_project, methods=["POST"]),
             Route("/project/create", _post_project_create, methods=["POST"]),
+            Route("/project/rename", _post_project_rename, methods=["POST"]),
+            Route("/project/delete", _post_project_delete, methods=["POST"]),
             Route("/theme", _post_theme, methods=["POST"]),
             Route("/locale", _post_locale, methods=["POST"]),
             Route("/static/lab_theme.css", theme_stylesheet, methods=["GET"]),
@@ -178,7 +243,9 @@ def create_app(workspace: Path) -> Starlette:
     return application
 
 
-def _render(request: Request, page_id: str) -> HTMLResponse:
+def _render(request: Request, page_id: str) -> Response:
+    if not _project_entered(request):
+        return RedirectResponse("/", status_code=303)
     flash = _take_flash(request)
     context = page_shell(request, page_id, flash)
     selected_video = None
@@ -237,9 +304,12 @@ def _render(request: Request, page_id: str) -> HTMLResponse:
     return response
 
 
-def _stash_notice(request: Request, text: str) -> None:
+def _stash_notice(request: Request, text: str, *, draft_name: str = "") -> None:
+    payload: dict[str, str] = {"error": text}
+    if draft_name:
+        payload["draft_name"] = draft_name
     try:
-        write_flash(_workspace(request), {"error": text})
+        write_flash(_workspace(request), payload)
     except Exception:  # noqa: BLE001 — the page still has to show the sentence
         request.app.state.pending_notice = text
 
@@ -251,7 +321,7 @@ def _take_flash(request: Request) -> dict[str, str]:
     except (LabError, OSError):
         payload = None
     if isinstance(payload, dict):
-        for key in ("error", "notice", "video_id"):
+        for key in ("error", "notice", "video_id", "draft_name"):
             value = payload.get(key)
             if isinstance(value, str) and value:
                 found[key] = value
@@ -275,6 +345,17 @@ def _set_cookie(response: HTMLResponse, name: str, value: object) -> None:
 
 def _workspace(request: Request) -> Path:
     return Path(request.app.state.workspace)
+
+
+def _project_entered(request: Request) -> bool:
+    """True when ``project.txt`` names a listed project. Does not write."""
+    workspace = _workspace(request)
+    try:
+        projects = storage.list_projects(workspace)
+    except LabError:
+        return False
+    stored = read_project_file(workspace)
+    return any(item["project_id"] == stored for item in projects)
 
 
 def _safe_next(value: str | None) -> str:

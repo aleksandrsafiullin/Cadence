@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
 from excavation_lab import storage
@@ -35,10 +35,12 @@ def label_routes() -> list[Route]:
     ]
 
 
-async def get_label(request: Request) -> HTMLResponse:
+async def get_label(request: Request) -> Response:
     from excavation_lab.web.app import _render
 
     response = _render(request, "label")
+    if response.status_code == 303:
+        return response
     status = getattr(request.state, "label_http_status", 200)
     if status != 200:
         response.status_code = int(status)

@@ -15,6 +15,7 @@ from excavation_lab.ui import training_page
 from excavation_lab.ui.charts import ap50_chart, loss_chart
 from excavation_lab.ui.tokens import theme_custom_properties
 from excavation_lab.web.app import create_app
+from excavation_lab.web.preferences import write_project_file
 
 _EPOCHS = (1, 2, 3)
 _LOSSES = (0.137, 0.864, 0.421)
@@ -85,6 +86,7 @@ def test_header_only_progress_has_no_chart(tmp_path: Path) -> None:
 def test_quality_without_scores_omits_the_spec(tmp_path: Path) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     _metrics(tmp_path, "run-empty", {"classes": {"bucket": {}}})
     with TestClient(create_app(tmp_path)) as client:
         missing = client.get("/quality")
@@ -109,6 +111,7 @@ def test_quality_without_scores_omits_the_spec(tmp_path: Path) -> None:
 def test_events_and_analysis_responses_have_no_chart_spec(tmp_path: Path) -> None:
     list_catalogs(tmp_path)
     create_project("pilot", tmp_path, catalog_id="excavation")
+    write_project_file(tmp_path, "pilot")
     job_id = "analyzejob1"
     _insert_job(tmp_path, job_id, kind="analyze")
     with TestClient(create_app(tmp_path)) as client:

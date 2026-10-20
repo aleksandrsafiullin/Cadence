@@ -29,63 +29,6 @@
   </tbody>
 </table>
 {% endif %}
-<details class="lab-details" id="project-create-panel"{% if not project_id %} open{% endif %}>
-  <summary>{{ create_project_heading }}</summary>
-  <form method="post" action="/project/create" id="project-create" class="lab-form">
-    <input type="hidden" name="next" value="{{ current_path | default('/') }}">
-    <label class="lab-label" for="project-name">{{ create_project_name }}</label>
-    <input class="lab-input" id="project-name" name="name" autocomplete="off">
-    <div class="lab-choice" role="radiogroup" aria-label="{{ create_project_heading }}">
-      <label class="lab-label">
-        <input type="radio" name="catalog_mode" value="existing" checked>
-        {{ catalog_existing }}
-      </label>
-      <label class="lab-label">
-        <input type="radio" name="catalog_mode" value="new">
-        {{ catalog_new }}
-      </label>
-    </div>
-    <div id="catalog-existing-fields">
-      <label class="lab-label" for="catalog-id">{{ catalog_existing }}</label>
-      <select class="lab-select" id="catalog-id" name="catalog_id">
-        <option value="" selected>{{ catalog_none }}</option>
-        {% for catalog_id in catalogs | default([]) %}
-        <option value="{{ catalog_id }}">{{ catalog_id }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <div id="catalog-new-fields" hidden>
-      <label class="lab-label" for="new-catalog-id">{{ catalog_id_label }}</label>
-      <input class="lab-input" id="new-catalog-id" name="new_catalog_id" autocomplete="off">
-      <label class="lab-label" for="copy-from">{{ catalog_copy_label }}</label>
-      <select class="lab-select" id="copy-from" name="copy_from">
-        <option value="" selected>{{ catalog_copy_none }}</option>
-        {% for catalog_id in catalogs | default([]) %}
-        <option value="{{ catalog_id }}">{{ catalog_id }}</option>
-        {% endfor %}
-      </select>
-      <p class="lab-label">{{ catalog_classes_heading }}</p>
-      <table class="lab-catalog-table" id="catalog-editor">
-        <thead>
-          <tr>
-            <th>{{ class_name_column }}</th>
-            <th>{{ class_title_column }}</th>
-            <th>{{ class_box_column }}</th>
-          </tr>
-        </thead>
-        <tbody id="catalog-class-rows">
-          <tr>
-            <td><input class="lab-input" name="class_name" autocomplete="off"></td>
-            <td><input class="lab-input" name="class_title" autocomplete="off"></td>
-            <td><input class="lab-input" name="class_box" autocomplete="off"></td>
-          </tr>
-        </tbody>
-      </table>
-      <button type="button" class="lab-btn" id="add-class-row">{{ add_class_row }}</button>
-    </div>
-    <button type="submit" class="lab-btn">{{ create_project_button }}</button>
-  </form>
-</details>
 {% if list_error %}
 <p class="lab-alert" role="alert">{{ list_error }}</p>
 {% endif %}
@@ -98,7 +41,7 @@
 <p class="lab-caption">{{ allowed_caption }}</p>
 {% endif %}
 {% elif video_options|length > 1 %}
-<form class="lab-form" method="get" action="/">
+<form class="lab-form" method="get" action="/video">
   <label class="lab-label" for="video-choice">{{ choice_label }}</label>
   <select class="lab-select" id="video-choice" name="video">
     {% for item in video_options %}
@@ -172,7 +115,7 @@
 {% endif %}
 <section class="lab-runs">
   <h2 class="lab-section">{{ runs_heading }}</h2>
-  <form method="get" action="/">
+  <form method="get" action="/video">
     <button type="submit" class="lab-button">{{ refresh_runs }}</button>
   </form>
   {% if run_rows %}
